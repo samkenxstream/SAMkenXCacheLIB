@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,10 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "cachelib/experimental/objcache2/ObjectCache.h"
 
-namespace facebook {
-namespace cachelib {
-namespace objcache2 {} // namespace objcache2
-} // namespace cachelib
-} // namespace facebook
+namespace cpp2 facebook.cachelib.objcache2.persistence
+
+struct Item {
+  1: string key;
+  2: string payload;
+  3: i32 objectSize;
+  4: i32 expiryTime;
+}
+
+struct Metadata {
+  1: i32 threadCount;
+}

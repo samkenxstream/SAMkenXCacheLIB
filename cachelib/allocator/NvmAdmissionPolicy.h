@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -81,19 +81,34 @@ class NvmAdmissionPolicy {
     return decision;
   }
 
-  // The method that exposes stats.
+  // Deprecated. Please use getCounters(visitor)
   virtual std::unordered_map<std::string, double> getCounters() final {
-    auto ctrs = getCountersImpl();
-    ctrs["ap.called"] = overallCount_.get();
-    ctrs["ap.accepted"] = accepted_.get();
-    ctrs["ap.rejected"] = rejected_.get();
-
-    auto visitorUs = [&ctrs](folly::StringPiece name, double count) {
-      ctrs[name.toString()] = count / 1000;
-    };
-    overallLatency_.visitQuantileEstimator(visitorUs, "ap.latency_us");
-    ctrs["ap.ttlRejected"] = ttlRejected_.get();
+    std::unordered_map<std::string, double> ctrs;
+    util::CounterVisitor visitor{[&ctrs](folly::StringPiece k, double v) {
+      auto keyStr = k.str();
+      ctrs.insert({std::move(keyStr), v});
+    }};
+    getCounters(visitor);
     return ctrs;
+  }
+
+  // The method that exposes stats.
+  virtual void getCounters(const util::CounterVisitor& visitor) final {
+    getCountersImpl(visitor);
+    visitor("ap.called",
+            overallCount_.get(),
+            util::CounterVisitor::CounterType::RATE);
+    visitor("ap.accepted", accepted_.get(),
+            util::CounterVisitor::CounterType::RATE);
+    visitor("ap.rejected", rejected_.get(),
+            util::CounterVisitor::CounterType::RATE);
+
+    overallLatency_.visitQuantileEstimator(
+        [&visitor](folly::StringPiece name, double count) {
+          visitor(name.toString(), count / 1000);
+        },
+        "ap.latency_us");
+    visitor("ap.ttlRejected", ttlRejected_.get());
   }
 
   // Track access for an item.
@@ -130,9 +145,7 @@ class NvmAdmissionPolicy {
   // Implementation specific statistics.
   // Please include a prefix/postfix with the name of implementation to avoid
   // collision with base level stats.
-  virtual std::unordered_map<std::string, double> getCountersImpl() {
-    return {};
-  }
+  virtual void getCountersImpl(const util::CounterVisitor&) {}
 
  private:
   util::PercentileStats overallLatency_;
@@ -184,13 +197,12 @@ class RejectFirstAP final : public NvmAdmissionPolicy<Cache> {
     return trackAndCheckIfSeenBefore(key);
   }
 
-  std::unordered_map<std::string, double> getCountersImpl() final override {
-    std::unordered_map<std::string, double> ctrs;
-    ctrs["ap.reject_first_keys_tracked"] = tracker_.numKeysTracked();
-    ctrs["ap.reject_first_tracking_window_secs"] =
-        tracker_.trackingWindowDurationSecs();
-    ctrs["ap.reject_first_admits_by_dram_hit"] = admitsByDramHits_.get();
-    return ctrs;
+  void getCountersImpl(const util::CounterVisitor& visitor) final override {
+    visitor("ap.reject_first_keys_tracked", tracker_.numKeysTracked());
+    visitor("ap.reject_first_tracking_window_secs",
+            tracker_.trackingWindowDurationSecs());
+    visitor("ap.reject_first_admits_by_dram_hit", admitsByDramHits_.get(),
+            util::CounterVisitor::CounterType::RATE);
   }
 
  private:

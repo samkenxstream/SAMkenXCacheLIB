@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -193,6 +193,18 @@ inline std::set<uint32_t> generateAllocSizes(
       maxAllocationClassSize,
       minAllocationClassSize,
       reduceFragmentationInAllocationClass);
+}
+
+// Calculates curr - prev, returning 0 if curr is less than prev
+inline uint64_t safeDiff(const uint64_t prev, const uint64_t curr) {
+  return curr > prev ? curr - prev : 0;
+}
+
+// Calculates hit ratio, based on total operations and total misses
+// @param ops total operations
+// @param miss operations that missed
+inline double hitRatioCalc(uint64_t ops, uint64_t miss) {
+  return ops == 0 ? 0.0 : 100.0 - 100.0 * miss / ops;
 }
 
 } // namespace util

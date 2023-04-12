@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -109,6 +109,8 @@ class PosixShmSegment : public ShmBase {
 
   void createReferenceMapping();
   void deleteReferenceMapping() const;
+
+  void memBind(void* addr) const;
 
   // file descriptor associated with the shm. This has FD_CLOEXEC set
   // and once opened, we close this only on destruction of this object

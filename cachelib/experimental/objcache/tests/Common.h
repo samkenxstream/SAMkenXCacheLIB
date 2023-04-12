@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -126,7 +126,7 @@ inline std::unique_ptr<LruAllocator> createCache() {
   LruAllocator::Config config;
   config.setCacheSize(100 * 1024 * 1024);
   auto cache = std::make_unique<LruAllocator>(config);
-  cache->addPool("default", cache->getCacheMemoryStats().cacheSize);
+  cache->addPool("default", cache->getCacheMemoryStats().ramCacheSize);
   return cache;
 }
 } // namespace test

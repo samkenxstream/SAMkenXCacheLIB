@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -85,9 +85,7 @@ class AbstractCache {
   //
   // @key must be valid till delayed async job execution, no copy is made. It
   // is user responsibility to make a copy if needed (capture in callback).
-  //
-  // Returns: Ok, Rejected
-  virtual Status lookupAsync(HashedKey key, LookupCallback cb) = 0;
+  virtual void lookupAsync(HashedKey key, LookupCallback cb) = 0;
 
   // Removes from the index, space reused after reclamation.
   // Returns: Ok, NotFound
@@ -97,9 +95,7 @@ class AbstractCache {
   // Callback is optional.
   //
   // See @lookupAsync about @key lifetime.
-  //
-  // Returns: Ok, Rejected
-  virtual Status removeAsync(HashedKey key, RemoveCallback cb) = 0;
+  virtual void removeAsync(HashedKey key, RemoveCallback cb) = 0;
 
   // Executes all queued operations and makes sure result is reflected on the
   // device.
@@ -118,8 +114,11 @@ class AbstractCache {
   // every counter with key name and value.
   virtual void getCounters(const CounterVisitor& visitor) const = 0;
 
-  // Return how big the cache size is in bytes
+  // Return how big the cache size is in bytes (device size)
   virtual uint64_t getSize() const = 0;
+
+  // Return the size of space used for caching
+  virtual uint64_t getUsableSize() const = 0;
 
   // This is a temporary API to update the maxWriteRate for
   // DynamicRandomAdissionPolicy. The long term plan is to
@@ -127,6 +126,10 @@ class AbstractCache {
   // Returns true if update successfully
   //         false if AdissionPolicy is not set or not DynamicRandom.
   virtual bool updateMaxRateForDynamicRandomAP(uint64_t) = 0;
+
+  // Get key and Buffer for a random sample
+  virtual std::pair<Status, std::string /* key */> getRandomAlloc(
+      Buffer& value) = 0;
 };
 } // namespace navy
 } // namespace cachelib

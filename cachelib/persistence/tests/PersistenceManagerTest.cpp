@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,8 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-// Copyright 2004-present Facebook. All Rights Reserved.
 
 #include <folly/Random.h>
 #include <gtest/gtest.h>
@@ -187,7 +185,7 @@ TEST_F(PersistenceManagerTest, testCompactCache) {
     Cache cache(Cache::SharedMemNew, cache_.config_);
 
     auto* cc = cache.template addCompactCache<IntValueCCache>(
-        ccacheName, cache.getCacheMemoryStats().cacheSize);
+        ccacheName, cache.getCacheMemoryStats().ramCacheSize);
     ASSERT_EQ(CCacheReturn::NOTFOUND, cc->set(Key(k1), &k2));
     ASSERT_EQ(CCacheReturn::NOTFOUND, cc->set(Key(k2), &k3));
     ASSERT_EQ(CCacheReturn::NOTFOUND, cc->set(Key(k3), &k1));

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -241,8 +241,6 @@ struct ReadHandleImpl {
     hdl.cloneFlags(*this);
     return hdl;
   }
-
-  bool isWriteHandle() const { return false; }
 
  protected:
   // accessor. Calling getInternal() on handle with isReady() == false blocks
@@ -570,8 +568,6 @@ struct WriteHandleImpl : public ReadHandleImpl<T> {
   // @throw std::overflow_error is the maximum item refcount is execeeded by
   //        creating this item handle.
   WriteHandleImpl clone() const { return WriteHandleImpl{ReadHandle::clone()}; }
-
-  bool isWriteHandle() const { return true; }
 
   // Friends
   friend ReadHandle;

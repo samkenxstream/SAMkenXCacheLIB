@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -76,10 +76,8 @@ struct MockNvmAdmissionPolicy : public NvmAdmissionPolicy<T> {
   virtual bool acceptImpl(const Item&, folly::Range<ChainedItemIter>) override {
     return true;
   }
-  virtual std::unordered_map<std::string, double> getCountersImpl() override {
-    std::unordered_map<std::string, double> ret;
-    ret["nvm_mock_policy"] = 1;
-    return ret;
+  virtual void getCountersImpl(const util::CounterVisitor& visitor) override {
+    visitor("nvm_mock_policy", 1);
   }
 };
 } // namespace
@@ -90,7 +88,7 @@ TEST_F(NvmCacheTest, APConfig) {
     auto& config = getConfig();
     config.enableRejectFirstAPForNvm(10, 10, 1, true);
     auto& nvm = makeCache();
-    auto ctrs = nvm.getNvmCacheStatsMap();
+    auto ctrs = nvm.getNvmCacheStatsMap().getCounts();
     EXPECT_NE(ctrs.find("ap.reject_first_keys_tracked"), ctrs.end());
   }
 
@@ -99,7 +97,7 @@ TEST_F(NvmCacheTest, APConfig) {
     config.setNvmCacheAdmissionPolicy(policy);
     ASSERT_NO_THROW(config.validate());
     auto& nvm = makeCache();
-    auto ctrs = nvm.getNvmCacheStatsMap();
+    auto ctrs = nvm.getNvmCacheStatsMap().getCounts();
     EXPECT_NE(ctrs.find("nvm_mock_policy"), ctrs.end());
   }
 
@@ -109,7 +107,7 @@ TEST_F(NvmCacheTest, APConfig) {
     auto& config = getConfig();
     config.enableRejectFirstAPForNvm(10, 10, 1, true);
     auto& nvm = makeCache();
-    auto ctrs = nvm.getNvmCacheStatsMap();
+    auto ctrs = nvm.getNvmCacheStatsMap().getCounts();
     EXPECT_NE(ctrs.find("nvm_mock_policy"), ctrs.end());
   }
 
@@ -137,7 +135,36 @@ TEST_F(NvmCacheTest, BasicGet) {
   ASSERT_TRUE(this->checkKeyExists(key, false /* ramOnly */));
 }
 
+TEST_F(NvmCacheTest, CouldExistFast) {
+  // Enable fast negative lookup
+  this->allocConfig_.nvmConfig->enableFastNegativeLookups = true;
+  this->makeCache();
+
+  auto& nvm = this->cache();
+  auto pid = this->poolId();
+
+  std::string key = "blah";
+
+  ASSERT_FALSE(this->cache().couldExistFast(key));
+
+  {
+    auto it = nvm.allocate(pid, key, 100);
+    nvm.insertOrReplace(it);
+  }
+
+  ASSERT_TRUE(this->cache().couldExistFast(key));
+  this->pushToNvmCacheFromRamForTesting(key);
+  ASSERT_TRUE(this->cache().couldExistFast(key));
+}
+
 TEST_F(NvmCacheTest, EvictToNvmGet) {
+  // Disable bighash since we're only testing large items here
+  this->config_.bigHash().setSizePctAndMaxItemSize(0, 100);
+  LruAllocator::NvmCacheConfig nvmConfig;
+  nvmConfig.navyConfig = config_;
+  this->allocConfig_.enableNvmCache(nvmConfig);
+  this->makeCache();
+
   auto& nvm = this->cache();
   auto pid = this->poolId();
 
@@ -149,6 +176,17 @@ TEST_F(NvmCacheTest, EvictToNvmGet) {
     auto it = nvm.allocate(pid, key, 15 * 1024);
     ASSERT_NE(nullptr, it);
     nvm.insertOrReplace(it);
+
+    // Ensure nvm-cache is flushed every 100 items. The reason is to
+    // make sure we don't have any race between a "remove" operation
+    // queued by an item's initial insertion with this item's eventual
+    // eviction. We only flush every 100 items to avoid pushing too
+    // many regions to flash that only has one item per region. If we
+    // flushed per insertion, we would fill up BlockCache prematurely
+    // and trigger evictions which are not desirable in this test.
+    if (i % 100 == 0) {
+      nvm.flushNvmCache();
+    }
   }
   nvm.flushNvmCache();
 
@@ -164,7 +202,7 @@ TEST_F(NvmCacheTest, EvictToNvmGet) {
     auto hdl = this->fetch(key, false /* ramOnly */);
     hdl.wait();
     if (index < nKeys) {
-      ASSERT_NE(nullptr, hdl);
+      ASSERT_NE(nullptr, hdl) << fmt::format("key: {}", key);
       // First nEvictions keys should have nvm clean bit set since
       // we load it from nvm
       const auto isClean = hdl->isNvmClean();
@@ -207,7 +245,13 @@ TEST_F(NvmCacheTest, EvictToNvmGetCheckCtime) {
     ASSERT_NE(nullptr, it);
     cache_->insertOrReplace(it);
     keyToCtime.insert({key, it->getCreationTime()});
+    // Avoid any nvm eviction being dropped due to the race with still
+    // outstanding remove operation for insertion
+    if (i % 100 == 0) {
+      nvm.flushNvmCache();
+    }
   }
+  nvm.flushNvmCache();
 
   const auto nEvictions = this->evictionCount() - evictBefore;
   ASSERT_LT(0, nEvictions);
@@ -293,6 +337,11 @@ TEST_F(NvmCacheTest, Delete) {
     auto it = nvm.allocate(pid, key, 15 * 1024);
     ASSERT_NE(nullptr, it);
     nvm.insertOrReplace(it);
+    // Avoid any nvm eviction being dropped due to the race with still
+    // outstanding remove operation for insertion
+    if (i % 100 == 0) {
+      nvm.flushNvmCache();
+    }
   }
   nvm.flushNvmCache();
 
@@ -495,6 +544,11 @@ TEST_F(NvmCacheTest, NvmEvicted) {
     auto it = nvm.allocate(pid, key, allocSize);
     ASSERT_NE(nullptr, it);
     nvm.insertOrReplace(it);
+    // Avoid any nvm eviction being dropped due to the race with still
+    // outstanding remove operation for insertion
+    if (i % 100 == 0) {
+      nvm.flushNvmCache();
+    }
   }
   nvm.flushNvmCache();
 
@@ -982,8 +1036,8 @@ TEST_F(NvmCacheTest, ChainedItems) {
       size_t fullSize = cache.getUsableSize(item);
       const auto text = genRandomStr(fullSize);
       vals.push_back(text);
-      std::memcpy(
-          reinterpret_cast<char*>(item.getMemory()), text.data(), text.size());
+      std::memcpy(reinterpret_cast<char*>(item.getMemory()), text.data(),
+                  text.size());
     };
 
     fillItem(*it);
@@ -1046,8 +1100,8 @@ TEST_F(NvmCacheTest, ChainedItemsModifyAccessible) {
       size_t fullSize = cache.getUsableSize(item);
       const auto text = genRandomStr(fullSize);
       vals.push_back(text);
-      std::memcpy(
-          reinterpret_cast<char*>(item.getMemory()), text.data(), text.size());
+      std::memcpy(reinterpret_cast<char*>(item.getMemory()), text.data(),
+                  text.size());
     };
 
     fillItem(*it);
@@ -1470,7 +1524,7 @@ TEST_F(NvmCacheTest, TruncatedAllocSize) {
 TEST_F(NvmCacheTest, NavyStats) {
   // Ensure we export all the stats we expect
   // Everytime we add a new stat, make sure to update this test accordingly
-  auto nvmStats = this->cache().getNvmCacheStatsMap();
+  auto nvmStats = this->cache().getNvmCacheStatsMap().toMap();
 
   auto cs = [&nvmStats](const std::string& name) mutable {
     if (nvmStats.end() != nvmStats.find(name)) {
@@ -1481,6 +1535,7 @@ TEST_F(NvmCacheTest, NavyStats) {
   };
 
   // navy::Driver
+  EXPECT_TRUE(cs("navy_total_usable_size"));
   EXPECT_TRUE(cs("navy_inserts"));
   EXPECT_TRUE(cs("navy_succ_inserts"));
   EXPECT_TRUE(cs("navy_lookups"));
@@ -1512,6 +1567,7 @@ TEST_F(NvmCacheTest, NavyStats) {
   EXPECT_TRUE(cs("navy_req_order_curr_spool_size"));
 
   // navy::BlockCache
+  EXPECT_TRUE(cs("navy_bc_size"));
   EXPECT_TRUE(cs("navy_bc_item_removed_with_no_access"));
   EXPECT_TRUE(cs("navy_bc_item_hits_avg"));
   EXPECT_TRUE(cs("navy_bc_item_hits_min"));
@@ -1546,6 +1602,7 @@ TEST_F(NvmCacheTest, NavyStats) {
   EXPECT_TRUE(cs("navy_bc_logical_written"));
   EXPECT_TRUE(cs("navy_bc_hole_count"));
   EXPECT_TRUE(cs("navy_bc_hole_bytes"));
+  EXPECT_TRUE(cs("navy_bc_used_size_bytes"));
   EXPECT_TRUE(cs("navy_bc_reinsertions"));
   EXPECT_TRUE(cs("navy_bc_reinsertion_bytes"));
   EXPECT_TRUE(cs("navy_bc_reinsertion_errors"));
@@ -1555,19 +1612,13 @@ TEST_F(NvmCacheTest, NavyStats) {
   EXPECT_TRUE(cs("navy_bc_cleanup_entry_header_checksum_errors"));
   EXPECT_TRUE(cs("navy_bc_cleanup_value_checksum_errors"));
   EXPECT_TRUE(cs("navy_bc_remove_attempt_collisions"));
-  for (int size = 64;;
-       size = std::min(4 * 1024 * 1024, static_cast<int>(size * 1.25))) {
-    EXPECT_TRUE(cs(folly::sformat("navy_bc_approx_bytes_in_size_{}", size)));
-    if (size == 4 * 1024 * 1024) {
-      break;
-    }
-  }
 
   // navy::RegionManager
   EXPECT_TRUE(cs("navy_bc_reclaim"));
   EXPECT_TRUE(cs("navy_bc_reclaim_time"));
   EXPECT_TRUE(cs("navy_bc_region_reclaim_errors"));
-  EXPECT_TRUE(cs("navy_bc_evicted"));
+  EXPECT_TRUE(cs("navy_bc_evictions"));
+  EXPECT_TRUE(cs("navy_bc_evictions_expired"));
   EXPECT_TRUE(cs("navy_bc_physical_written"));
   EXPECT_TRUE(cs("navy_bc_external_fragmentation"));
   EXPECT_TRUE(cs("navy_bc_inmem_waiting_flush"));
@@ -1624,6 +1675,7 @@ TEST_F(NvmCacheTest, NavyStats) {
   EXPECT_TRUE(cs("navy_bc_lru_region_hits_estimate_max"));
 
   // navy::BigHash
+  EXPECT_TRUE(cs("navy_bh_size"));
   EXPECT_TRUE(cs("navy_bh_items"));
   EXPECT_TRUE(cs("navy_bh_inserts"));
   EXPECT_TRUE(cs("navy_bh_succ_inserts"));
@@ -1632,6 +1684,7 @@ TEST_F(NvmCacheTest, NavyStats) {
   EXPECT_TRUE(cs("navy_bh_removes"));
   EXPECT_TRUE(cs("navy_bh_succ_removes"));
   EXPECT_TRUE(cs("navy_bh_evictions"));
+  EXPECT_TRUE(cs("navy_bh_evictions_expired"));
   EXPECT_TRUE(cs("navy_bh_logical_written"));
   EXPECT_TRUE(cs("navy_bh_physical_written"));
   EXPECT_TRUE(cs("navy_bh_io_errors"));
@@ -1640,13 +1693,6 @@ TEST_F(NvmCacheTest, NavyStats) {
   EXPECT_TRUE(cs("navy_bh_bf_rebuilds"));
   EXPECT_TRUE(cs("navy_bh_checksum_errors"));
   EXPECT_TRUE(cs("navy_bh_used_size_bytes"));
-  for (int size = 64;; size = std::min(1024, static_cast<int>(size * 1.25))) {
-    EXPECT_TRUE(cs(folly::sformat("navy_bh_approx_bytes_in_size_{}", size)));
-    if (size == 1024) {
-      break;
-    }
-  }
-
   // navy::Device
   EXPECT_TRUE(cs("navy_device_bytes_written"));
   EXPECT_TRUE(cs("navy_device_bytes_read"));
@@ -1681,6 +1727,22 @@ TEST_F(NvmCacheTest, NavyStats) {
   EXPECT_TRUE(cs("navy_device_write_latency_us_p9999"));
   EXPECT_TRUE(cs("navy_device_write_latency_us_p99999"));
   EXPECT_TRUE(cs("navy_device_write_latency_us_p999999"));
+  EXPECT_TRUE(cs("navy_bh_expired_loop_x100_avg"));
+  EXPECT_TRUE(cs("navy_bh_expired_loop_x100_min"));
+  EXPECT_TRUE(cs("navy_bh_expired_loop_x100_max"));
+  EXPECT_TRUE(cs("navy_bh_expired_loop_x100_p5"));
+  EXPECT_TRUE(cs("navy_bh_expired_loop_x100_p10"));
+  EXPECT_TRUE(cs("navy_bh_expired_loop_x100_p25"));
+  EXPECT_TRUE(cs("navy_bh_expired_loop_x100_p50"));
+  EXPECT_TRUE(cs("navy_bh_expired_loop_x100_p75"));
+  EXPECT_TRUE(cs("navy_bh_expired_loop_x100_p90"));
+  EXPECT_TRUE(cs("navy_bh_expired_loop_x100_p95"));
+  EXPECT_TRUE(cs("navy_bh_expired_loop_x100_p99"));
+  EXPECT_TRUE(cs("navy_bh_expired_loop_x100_p999"));
+  EXPECT_TRUE(cs("navy_bh_expired_loop_x100_p9999"));
+  EXPECT_TRUE(cs("navy_bh_expired_loop_x100_p99999"));
+  EXPECT_TRUE(cs("navy_bh_expired_loop_x100_p999999"));
+
   EXPECT_TRUE(cs("navy_device_encryption_errors"));
   EXPECT_TRUE(cs("navy_device_decryption_errors"));
   EXPECT_TRUE(cs("navy_device_write_latency_us_max"));
@@ -2130,7 +2192,7 @@ void NvmCacheTest::verifyItemInIOBuf(const std::string& key,
                                      const ReadHandle& handle,
                                      folly::IOBuf* iobuf) {
   Item& item = *reinterpret_cast<Item*>(iobuf->writableData());
-  ASSERT_EQ(Item::getRequiredSize(key, handle->getSize()), iobuf->length());
+  ASSERT_LE(Item::getRequiredSize(key, handle->getSize()), iobuf->length());
 
   ASSERT_EQ(true, item.isNvmClean());
   ASSERT_EQ(true, item.isNvmEvicted());
@@ -2212,6 +2274,93 @@ TEST_F(NvmCacheTest, testCreateItemAsIOBufChained) {
 
     verifyItemInIOBuf(key, handle, iobuf.get());
   }
+}
+
+TEST_F(NvmCacheTest, testSampleItem) {
+  auto& config = getConfig();
+  auto& navyConfig = config.nvmConfig->navyConfig;
+  navyConfig.setMemoryFile(config.getCacheSize());
+  navyConfig.setDeviceMetadataSize(0);
+  // Use only BlockCache for simplicity
+  navyConfig.bigHash().setSizePctAndMaxItemSize(0, 0);
+  navyConfig.blockCache().setRegionSize(32 * 1024);
+
+  // This test is dependent on poolAllocsizes_
+  ASSERT_EQ(20 * 1024, *poolAllocsizes_.begin());
+  size_t numMax = config.getCacheSize() / *poolAllocsizes_.begin();
+
+  std::mutex mtx;
+  std::atomic<int> numEvicted = 0;
+  std::unordered_set<std::string> cachedKeys;
+
+  config.setRemoveCallback({});
+  config.setItemDestructor([&](const DestructedData& data) {
+    std::unique_lock<std::mutex> l(mtx);
+    if (data.context == DestructorContext::kEvictedFromNVM ||
+        data.context == DestructorContext::kEvictedFromRAM) {
+      ++numEvicted;
+    }
+    cachedKeys.erase(data.item.getKey().toString());
+  });
+
+  auto& cache = makeCache();
+  auto pid = this->poolId();
+
+  size_t nKeys = 0;
+  // Insert items until either RAM or NVM cache is full
+  for (; numEvicted == 0 && nKeys < numMax; nKeys++) {
+    auto key = folly::sformat("key{}", nKeys);
+    // the pool's allocsize is
+    auto it = cache.allocate(pid, key, 16 * 1024);
+    ASSERT_NE(nullptr, it);
+    cache.insertOrReplace(it);
+
+    {
+      std::unique_lock<std::mutex> l(mtx);
+      cachedKeys.insert(key);
+    }
+    ASSERT_TRUE(this->pushToNvmCacheFromRamForTesting(key));
+  }
+
+  // remove even numbered keys to make holes
+  for (size_t i = 0; i < nKeys; i += 2) {
+    auto key = folly::sformat("key{}", i);
+    cache.remove(key);
+  }
+  // wait for async remove finish
+  cache.flushNvmCache();
+
+  {
+    std::unique_lock<std::mutex> l(mtx);
+    nKeys = cachedKeys.size();
+  }
+
+  size_t numRam = 0;
+  size_t numNvm = 0;
+  for (size_t i = 0; i < nKeys * 10; i++) {
+    auto sample = cache.getSampleItem();
+    if (sample.isValid()) {
+      {
+        std::unique_lock<std::mutex> l(mtx);
+        ASSERT_EQ(1, cachedKeys.count(sample->getKey().toString()));
+      }
+      if (sample.isNvmItem()) {
+        numNvm++;
+      } else {
+        numRam++;
+      }
+    }
+  }
+
+  // internal fragmentation for RAM and NVM are around
+  // 20% (16K / 20K) and 37.5% (20K / 32K), respectively
+  // 15% is arbitrary and pessimistic target
+  size_t targetCnt = (size_t)((double)nKeys * 10.0 * 0.5 * 0.15);
+  ASSERT_GE(numNvm, targetCnt);
+  ASSERT_GE(numRam, targetCnt);
+  // Should reset the cache since the destructor callback
+  // could use local variables
+  cache_.reset();
 }
 
 TEST_F(NvmCacheTest, testItemDestructor) {

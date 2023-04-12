@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -261,6 +261,15 @@ bool isDir(const std::string& name) {
     throwSystemError(errno, folly::sformat("Path: {}", name));
   }
   return S_ISDIR(buf.st_mode) ? true : false;
+}
+
+bool isBlk(const std::string& name) {
+  struct stat buf = {};
+  auto err = stat(name.c_str(), &buf);
+  if (err) {
+    throwSystemError(errno, folly::sformat("Path: {}", name));
+  }
+  return S_ISBLK(buf.st_mode) ? true : false;
 }
 
 /* throws error on any failure. */

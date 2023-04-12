@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,6 +41,8 @@ struct ThroughputStats {
   uint64_t delNotFound{0}; // deletes for non-existent key
   uint64_t addChained{0};
   uint64_t addChainedFailure{0};
+  uint64_t couldExistOp{0};
+  uint64_t couldExistOpFalse{0};
   // current number of ops executed. Read periodically to track progress
   uint64_t ops{0};
 

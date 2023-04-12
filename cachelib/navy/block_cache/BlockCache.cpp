@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,10 +31,6 @@
 namespace facebook {
 namespace cachelib {
 namespace navy {
-namespace {
-constexpr uint64_t kMinSizeDistribution = 64;
-constexpr double kSizeDistributionGranularityFactor = 1.25;
-} // namespace
 
 constexpr uint32_t BlockCache::kMinAllocAlignSize;
 constexpr uint32_t BlockCache::kMaxItemSize;
@@ -54,6 +50,13 @@ BlockCache::Config& BlockCache::Config::validate() {
   }
   if (cacheSize <= 0) {
     throw std::invalid_argument("invalid size");
+  }
+  if (cacheSize % regionSize != 0) {
+    throw std::invalid_argument(
+        folly::sformat("Cache size is not aligned to region size! cache size: "
+                       "{}, region size: {}",
+                       cacheSize,
+                       regionSize));
   }
   if (getNumRegions() < cleanRegionsPool) {
     throw std::invalid_argument("not enough space on device");
@@ -113,6 +116,7 @@ BlockCache::BlockCache(Config&& config)
 BlockCache::BlockCache(Config&& config, ValidConfigTag)
     : config_{serializeConfig(config)},
       numPriorities_{config.numPriorities},
+      checkExpired_{std::move(config.checkExpired)},
       destructorCb_{std::move(config.destructorCb)},
       checksumData_{config.checksum},
       device_{*config.device},
@@ -136,9 +140,7 @@ BlockCache::BlockCache(Config&& config, ValidConfigTag)
                      config.numPriorities,
                      config.inMemBufFlushRetryLimit},
       allocator_{regionManager_, config.numPriorities},
-      reinsertionPolicy_{makeReinsertionPolicy(config.reinsertionConfig)},
-      sizeDist_{kMinSizeDistribution, config.regionSize,
-                kSizeDistributionGranularityFactor} {
+      reinsertionPolicy_{makeReinsertionPolicy(config.reinsertionConfig)} {
   validate(config);
   XLOG(INFO, "Block cache created");
   XDCHECK_NE(readBufferSize_, 0u);
@@ -187,18 +189,25 @@ Status BlockCache::insert(HashedKey hk, BufferView value) {
   // After allocation a region is opened for writing. Until we close it, the
   // region would not be reclaimed and index never gets an invalid entry.
   const auto status = writeEntry(addr, slotSize, hk, value);
+  auto newObjSizeHint = encodeSizeHint(slotSize);
   if (status == Status::Ok) {
-    const auto lr = index_.insert(hk.keyHash(),
-                                  encodeRelAddress(addr.add(slotSize)),
-                                  encodeSizeHint(slotSize));
+    const auto lr = index_.insert(
+        hk.keyHash(), encodeRelAddress(addr.add(slotSize)), newObjSizeHint);
     // We replaced an existing key in the index
+    uint64_t newObjSize = decodeSizeHint(newObjSizeHint);
+    uint64_t oldObjSize = 0;
     if (lr.found()) {
-      holeSizeTotal_.add(decodeSizeHint(lr.sizeHint()));
+      oldObjSize = decodeSizeHint(lr.sizeHint());
+      holeSizeTotal_.add(oldObjSize);
       holeCount_.inc();
       insertHashCollisionCount_.inc();
     }
     succInsertCount_.inc();
-    sizeDist_.addSize(slotSize);
+    if (newObjSize < oldObjSize) {
+      usedSizeBytes_.sub(oldObjSize - newObjSize);
+    } else {
+      usedSizeBytes_.add(newObjSize - oldObjSize);
+    }
   }
   allocator_.close(std::move(desc));
   return status;
@@ -253,6 +262,82 @@ Status BlockCache::lookup(HashedKey hk, Buffer& value) {
   }
 }
 
+std::pair<Status, std::string> BlockCache::getRandomAlloc(Buffer& value) {
+  // Get rendom region and offset within the region
+  auto rid = regionManager_.getRandomRegion();
+  auto& region = regionManager_.getRegion(rid);
+  auto randOffset = folly::Random::rand32(0, regionSize_);
+  auto offset = region.getLastEntryEndOffset();
+  if (randOffset >= offset) {
+    return std::make_pair(Status::NotFound, "");
+  }
+
+  const auto seqNumber = regionManager_.getSeqNumber();
+  RegionDescriptor rdesc = regionManager_.openForRead(rid, seqNumber);
+  if (rdesc.status() != OpenStatus::Ready) {
+    return std::make_pair(Status::NotFound, "");
+  }
+
+  auto buffer = regionManager_.read(rdesc, RelAddress{rid, 0}, offset);
+  // The region had been read out to Buffer, so can be closed here
+  regionManager_.close(std::move(rdesc));
+  if (buffer.size() != offset) {
+    return std::make_pair(Status::NotFound, "");
+  }
+
+  // Iterate the entries backward until we find the entry
+  // where the randOffset falls into
+  while (offset > 0) {
+    auto entryEnd = buffer.data() + offset;
+    auto desc =
+        *reinterpret_cast<const EntryDesc*>(entryEnd - sizeof(EntryDesc));
+    if (desc.csSelf != desc.computeChecksum()) {
+      XLOGF(ERR,
+            "Item header checksum mismatch. Region {} is likely corrupted. "
+            "Expected:{}, Actual: {}",
+            rid.index(),
+            desc.csSelf,
+            desc.computeChecksum());
+      break;
+    }
+
+    RelAddress addrEnd{rid, offset};
+    const auto entrySize = serializedSize(desc.keySize, desc.valueSize);
+
+    XDCHECK_GE(offset, entrySize);
+    offset -= entrySize; // start of this entry
+    if (randOffset < offset) {
+      continue;
+    }
+
+    BufferView valueView{desc.valueSize, entryEnd - entrySize};
+    if (checksumData_ && desc.cs != checksum(valueView)) {
+      XLOGF(ERR,
+            "Item value checksum mismatch. Region {} is likely corrupted. "
+            "Expected:{}, Actual: {}.",
+            rid.index(),
+            desc.cs,
+            checksum(valueView));
+      break;
+    }
+
+    // confirm that the chosen NvmItem is still being mapped with the key
+    HashedKey hk =
+        makeHK(entryEnd - sizeof(EntryDesc) - desc.keySize, desc.keySize);
+    const auto lr = index_.lookup(hk.keyHash());
+    if (!lr.found() || addrEnd != decodeRelAddress(lr.address())) {
+      // overwritten
+      break;
+    }
+
+    // The entry is within the region buffer, so copy it out to new Buffer
+    value = Buffer(valueView);
+    return std::make_pair(Status::Ok, hk.key().str());
+  }
+
+  return std::make_pair(Status::NotFound, "");
+}
+
 Status BlockCache::remove(HashedKey hk) {
   removeCount_.inc();
 
@@ -281,10 +366,12 @@ Status BlockCache::remove(HashedKey hk) {
 
   auto lr = index_.remove(hk.keyHash());
   if (lr.found()) {
-    holeSizeTotal_.add(decodeSizeHint(lr.sizeHint()));
+    uint64_t removedObjectSize = decodeSizeHint(lr.sizeHint());
+    holeSizeTotal_.add(removedObjectSize);
     holeCount_.inc();
+    usedSizeBytes_.sub(removedObjectSize);
     succRemoveCount_.inc();
-    if (!value.isNull()) {
+    if (!value.isNull() && destructorCb_) {
       destructorCb_(hk, value.view(), DestructorEvent::Removed);
     }
     return Status::Ok;
@@ -337,6 +424,7 @@ uint32_t BlockCache::onRegionReclaim(RegionId rid, BufferView buffer) {
     switch (reinsertionRes) {
     case ReinsertionRes::kEvicted:
       evictionCount++;
+      usedSizeBytes_.sub(decodeSizeHint(encodeSizeHint(entrySize)));
       break;
     case ReinsertionRes::kRemoved:
       holeCount_.sub(1);
@@ -388,9 +476,10 @@ void BlockCache::onRegionCleanup(RegionId rid, BufferView buffer) {
     }
 
     // remove the item
-    auto removeRes = removeItem(hk, entrySize, RelAddress{rid, offset});
+    auto removeRes = removeItem(hk, RelAddress{rid, offset});
     if (removeRes) {
       evictionCount++;
+      usedSizeBytes_.sub(decodeSizeHint(encodeSizeHint(entrySize)));
     } else {
       holeCount_.sub(1);
       holeSizeTotal_.sub(decodeSizeHint(encodeSizeHint(entrySize)));
@@ -405,10 +494,7 @@ void BlockCache::onRegionCleanup(RegionId rid, BufferView buffer) {
   XDCHECK_GE(region.getNumItems(), evictionCount);
 }
 
-bool BlockCache::removeItem(HashedKey hk,
-                            uint32_t entrySize,
-                            RelAddress currAddr) {
-  sizeDist_.removeSize(entrySize);
+bool BlockCache::removeItem(HashedKey hk, RelAddress currAddr) {
   if (index_.removeIfMatch(hk.keyHash(), encodeRelAddress(currAddr))) {
     return true;
   }
@@ -418,9 +504,11 @@ bool BlockCache::removeItem(HashedKey hk,
 
 BlockCache::ReinsertionRes BlockCache::reinsertOrRemoveItem(
     HashedKey hk, BufferView value, uint32_t entrySize, RelAddress currAddr) {
-  auto removeItem = [this, hk, entrySize, currAddr] {
-    sizeDist_.removeSize(entrySize);
+  auto removeItem = [this, hk, currAddr](bool expired) {
     if (index_.removeIfMatch(hk.keyHash(), encodeRelAddress(currAddr))) {
+      if (expired) {
+        evictionExpiredCount_.inc();
+      }
       return ReinsertionRes::kEvicted;
     }
     return ReinsertionRes::kRemoved;
@@ -429,12 +517,15 @@ BlockCache::ReinsertionRes BlockCache::reinsertOrRemoveItem(
   const auto lr = index_.peek(hk.keyHash());
   if (!lr.found() || decodeRelAddress(lr.address()) != currAddr) {
     evictionLookupMissCounter_.inc();
-    sizeDist_.removeSize(entrySize);
     return ReinsertionRes::kRemoved;
   }
 
+  if (checkExpired_ && checkExpired_(value)) {
+    return removeItem(true);
+  }
+
   if (!reinsertionPolicy_ || !reinsertionPolicy_->shouldReinsert(hk.key())) {
-    return removeItem();
+    return removeItem(false);
   }
 
   // Priority of an re-inserted item is determined by its past accesses
@@ -458,7 +549,7 @@ BlockCache::ReinsertionRes BlockCache::reinsertOrRemoveItem(
     break;
   case OpenStatus::Retry:
     reinsertionErrorCount_.inc();
-    return removeItem();
+    return removeItem(false);
   }
   auto closeRegionGuard =
       folly::makeGuard([this, desc = std::move(desc)]() mutable {
@@ -470,7 +561,7 @@ BlockCache::ReinsertionRes BlockCache::reinsertOrRemoveItem(
   const auto status = writeEntry(addr, slotSize, hk, value);
   if (status != Status::Ok) {
     reinsertionErrorCount_.inc();
-    return removeItem();
+    return removeItem(false);
   }
 
   const auto replaced =
@@ -479,7 +570,7 @@ BlockCache::ReinsertionRes BlockCache::reinsertOrRemoveItem(
                             encodeRelAddress(currAddr));
   if (!replaced) {
     reinsertionErrorCount_.inc();
-    return removeItem();
+    return removeItem(false);
   }
   reinsertionCount_.inc();
   reinsertionBytes_.add(entrySize);
@@ -572,6 +663,10 @@ Status BlockCache::readEntry(const RegionDescriptor& readDesc,
   value = std::move(buffer);
   value.shrink(desc.valueSize);
   if (checksumData_ && desc.cs != checksum(value.view())) {
+    XLOG_N_PER_MS(ERR, 10, 10'000) << folly::sformat(
+        "Item value checksum mismatch when looking up key {}. "
+        "Expected:{}, Actual: {}.",
+        key, desc.cs, checksum(value.view()));
     value.reset();
     lookupValueChecksumErrorCount_.inc();
     return Status::DeviceError;
@@ -597,51 +692,70 @@ void BlockCache::reset() {
   removeCount_.set(0);
   allocErrorCount_.set(0);
   logicalWrittenCount_.set(0);
-  sizeDist_.reset();
   holeCount_.set(0);
   holeSizeTotal_.set(0);
+  usedSizeBytes_.set(0);
 }
 
 void BlockCache::getCounters(const CounterVisitor& visitor) const {
+  visitor("navy_bc_size", getSize());
   visitor("navy_bc_items", index_.computeSize());
-  visitor("navy_bc_inserts", insertCount_.get());
-  visitor("navy_bc_insert_hash_collisions", insertHashCollisionCount_.get());
-  visitor("navy_bc_succ_inserts", succInsertCount_.get());
-  visitor("navy_bc_lookups", lookupCount_.get());
-  visitor("navy_bc_lookup_false_positives", lookupFalsePositiveCount_.get());
+  visitor("navy_bc_inserts", insertCount_.get(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_bc_insert_hash_collisions", insertHashCollisionCount_.get(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_bc_succ_inserts", succInsertCount_.get(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_bc_lookups", lookupCount_.get(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_bc_lookup_false_positives", lookupFalsePositiveCount_.get(),
+          CounterVisitor::CounterType::RATE);
   visitor("navy_bc_lookup_entry_header_checksum_errors",
-          lookupEntryHeaderChecksumErrorCount_.get());
+          lookupEntryHeaderChecksumErrorCount_.get(),
+          CounterVisitor::CounterType::RATE);
   visitor("navy_bc_lookup_value_checksum_errors",
-          lookupValueChecksumErrorCount_.get());
+          lookupValueChecksumErrorCount_.get(),
+          CounterVisitor::CounterType::RATE);
   visitor("navy_bc_reclaim_entry_header_checksum_errors",
-          reclaimEntryHeaderChecksumErrorCount_.get());
+          reclaimEntryHeaderChecksumErrorCount_.get(),
+          CounterVisitor::CounterType::RATE);
   visitor("navy_bc_reclaim_value_checksum_errors",
-          reclaimValueChecksumErrorCount_.get());
+          reclaimValueChecksumErrorCount_.get(),
+          CounterVisitor::CounterType::RATE);
   visitor("navy_bc_cleanup_entry_header_checksum_errors",
-          cleanupEntryHeaderChecksumErrorCount_.get());
+          cleanupEntryHeaderChecksumErrorCount_.get(),
+          CounterVisitor::CounterType::RATE);
   visitor("navy_bc_cleanup_value_checksum_errors",
-          cleanupValueChecksumErrorCount_.get());
-  visitor("navy_bc_succ_lookups", succLookupCount_.get());
-  visitor("navy_bc_removes", removeCount_.get());
-  visitor("navy_bc_succ_removes", succRemoveCount_.get());
-  visitor("navy_bc_eviction_lookup_misses", evictionLookupMissCounter_.get());
-  visitor("navy_bc_alloc_errors", allocErrorCount_.get());
-  visitor("navy_bc_logical_written", logicalWrittenCount_.get());
+          cleanupValueChecksumErrorCount_.get(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_bc_succ_lookups", succLookupCount_.get(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_bc_removes", removeCount_.get(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_bc_succ_removes", succRemoveCount_.get(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_bc_eviction_lookup_misses", evictionLookupMissCounter_.get(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_bc_evictions_expired", evictionExpiredCount_.get(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_bc_alloc_errors", allocErrorCount_.get(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_bc_logical_written", logicalWrittenCount_.get(),
+          CounterVisitor::CounterType::RATE);
   visitor("navy_bc_hole_count", holeCount_.get());
   visitor("navy_bc_hole_bytes", holeSizeTotal_.get());
-  visitor("navy_bc_reinsertions", reinsertionCount_.get());
-  visitor("navy_bc_reinsertion_bytes", reinsertionBytes_.get());
-  visitor("navy_bc_reinsertion_errors", reinsertionErrorCount_.get());
+  visitor("navy_bc_used_size_bytes", usedSizeBytes_.get());
+  visitor("navy_bc_reinsertions", reinsertionCount_.get(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_bc_reinsertion_bytes", reinsertionBytes_.get(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_bc_reinsertion_errors", reinsertionErrorCount_.get(),
+          CounterVisitor::CounterType::RATE);
   visitor("navy_bc_lookup_for_item_destructor_errors",
-          lookupForItemDestructorErrorCount_.get());
-  visitor("navy_bc_remove_attempt_collisions", removeAttemptCollisions_.get());
-
-  auto snapshot = sizeDist_.getSnapshot();
-  for (auto& kv : snapshot) {
-    auto statName = folly::sformat("navy_bc_approx_bytes_in_size_{}", kv.first);
-    visitor(statName.c_str(), kv.second);
-  }
-
+          lookupForItemDestructorErrorCount_.get(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_bc_remove_attempt_collisions", removeAttemptCollisions_.get(),
+          CounterVisitor::CounterType::RATE);
   // Allocator visits region manager
   allocator_.getCounters(visitor);
   index_.getCounters(visitor);
@@ -654,10 +768,10 @@ void BlockCache::getCounters(const CounterVisitor& visitor) const {
 void BlockCache::persist(RecordWriter& rw) {
   XLOG(INFO, "Starting block cache persist");
   auto config = config_;
-  *config.sizeDist() = sizeDist_.getSnapshot();
   *config.allocAlignSize() = allocAlignSize_;
   config.holeCount() = holeCount_.get();
   config.holeSizeTotal() = holeSizeTotal_.get();
+  *config.usedSizeBytes() = usedSizeBytes_.get();
   *config.reinsertionPolicyEnabled() = (reinsertionPolicy_ != nullptr);
   serializeProto(config, rw);
   regionManager_.persist(rw);
@@ -688,48 +802,22 @@ void BlockCache::tryRecover(RecordReader& rr) {
     XLOGF(ERR, "Recovery config: {}", configStr.c_str());
     throw std::invalid_argument("Recovery config does not match cache config");
   }
-  sizeDist_ = SizeDistribution{*config.sizeDist()};
   holeCount_.set(*config.holeCount());
   holeSizeTotal_.set(*config.holeSizeTotal());
+  usedSizeBytes_.set(*config.usedSizeBytes());
   regionManager_.recover(rr);
   index_.recover(rr);
 }
 
 bool BlockCache::isValidRecoveryData(
     const serialization::BlockCacheConfig& recoveredConfig) const {
-  if (!(*config_.cacheBaseOffset() == *recoveredConfig.cacheBaseOffset() &&
-        static_cast<int32_t>(allocAlignSize_) ==
-            *recoveredConfig.allocAlignSize() &&
-        *config_.checksum() == *recoveredConfig.checksum())) {
-    return false;
-  }
-  // TOOD: this is to handle alignment change on cache size from v11 to v12 and
-  // beyond. Clean this up after BlockCache everywhere is on v12, and restore
-  // the above block in the comments.
-  // Forward warm-roll for v11 going forward to v12+
-  if (*config_.version() > *recoveredConfig.version() &&
-      *config_.version() >= 12 && *recoveredConfig.version() == 11) {
-    XLOGF(INFO,
-          "Handling warm roll upgrade from Navy v11 to v12+. Old cache size: "
-          "{}, New cache size: {}",
-          *recoveredConfig.cacheSize(),
-          *config_.cacheSize());
-    return *config_.cacheSize() / regionSize_ ==
-           *recoveredConfig.cacheSize() / regionSize_;
-  }
-  // Backward warm-roll. This is for v12+ rolling back to v11
-  if (*config_.version() < *recoveredConfig.version() &&
-      *config_.version() == 11 && *recoveredConfig.version() >= 12) {
-    XLOGF(INFO,
-          "Handling warm roll downgrade from Navy v12+ to v11. Old cache size: "
-          "{}, New cache size: {}",
-          *recoveredConfig.cacheSize(),
-          *config_.cacheSize());
-    return *config_.cacheSize() / regionSize_ ==
-           *recoveredConfig.cacheSize() / regionSize_;
-  }
-  return *config_.cacheSize() == *recoveredConfig.cacheSize() &&
-         *config_.version() == *recoveredConfig.version();
+  return *config_.cacheBaseOffset_ref() ==
+             *recoveredConfig.cacheBaseOffset_ref() &&
+         *config_.cacheSize_ref() == *recoveredConfig.cacheSize_ref() &&
+         static_cast<int32_t>(allocAlignSize_) ==
+             *recoveredConfig.allocAlignSize_ref() &&
+         *config_.checksum_ref() == *recoveredConfig.checksum_ref() &&
+         *config_.version_ref() == *recoveredConfig.version_ref();
 }
 
 serialization::BlockCacheConfig BlockCache::serializeConfig(

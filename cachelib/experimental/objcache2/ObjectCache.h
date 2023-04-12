@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <folly/ScopeGuard.h>
@@ -23,15 +24,22 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <stdexcept>
 #include <string>
 #include <thread>
+#include <typeinfo>
 #include <vector>
 
 #include "cachelib/allocator/CacheAllocator.h"
 #include "cachelib/common/EventInterface.h"
+#include "cachelib/common/Serialization.h"
 #include "cachelib/common/Time.h"
 #include "cachelib/experimental/objcache2/ObjectCacheBase.h"
+#include "cachelib/experimental/objcache2/ObjectCacheConfig.h"
 #include "cachelib/experimental/objcache2/ObjectCacheSizeController.h"
+#include "cachelib/experimental/objcache2/persistence/Persistence.h"
+#include "cachelib/experimental/objcache2/persistence/gen-cpp2/persistent_data_types.h"
+#include "cachelib/experimental/objcache2/util/ThreadMemoryTracker.h"
 
 namespace facebook {
 namespace cachelib {
@@ -47,9 +55,21 @@ struct FOLLY_PACK_ATTR ObjectCacheItem {
   size_t objectSize;
 };
 
+enum class ObjectCacheDestructorContext {
+  // evicted from cache
+  kEvicted,
+  // removed by user calling remove()/insertOrReplace() or due to expired
+  kRemoved,
+  // unknown cases
+  kUnknown,
+};
+
 struct ObjectCacheDestructorData {
-  ObjectCacheDestructorData(uintptr_t ptr, const KAllocation::Key& k)
-      : objectPtr(ptr), key(k) {}
+  ObjectCacheDestructorData(ObjectCacheDestructorContext ctx,
+                            uintptr_t ptr,
+                            const KAllocation::Key& k,
+                            uint32_t expiryTime)
+      : context(ctx), objectPtr(ptr), key(k), expiryTime(expiryTime) {}
 
   // release the evicted/removed/expired object memory
   template <typename T>
@@ -57,93 +77,17 @@ struct ObjectCacheDestructorData {
     delete reinterpret_cast<T*>(objectPtr);
   }
 
+  // remove or eviction
+  ObjectCacheDestructorContext context;
+
   // pointer of the evicted/removed/expired object
   uintptr_t objectPtr;
 
   // the key corresponding to the evicted/removed/expired object
   const KAllocation::Key& key;
-};
 
-struct ObjectCacheConfig {
-  // With size controller disabled, above this many entries, L1 will start
-  // evicting.
-  // With size controller enabled, this is only a hint used for initialization.
-  size_t l1EntriesLimit{};
-
-  // This controls how many buckets are present in L1's hashtable
-  uint32_t l1HashTablePower{10};
-
-  // This controls how many locks are present in L1's hashtable
-  uint32_t l1LockPower{10};
-
-  // Number of shards to improve insert/remove concurrency
-  size_t l1NumShards{1};
-
-  // The cache name
-  std::string cacheName;
-
-  // The maximum key size in bytes. Default to 255 bytes which is the maximum
-  // key size cachelib supports.
-  uint8_t maxKeySizeBytes{255};
-
-  // If this is enabled, user has to pass the object size upon insertion
-  bool objectSizeTrackingEnabled{false};
-
-  // Period to fire size controller in milliseconds. 0 means size controller is
-  // disabled.
-  int sizeControllerIntervalMs{0};
-
-  // With size controller enabled, if total object size is above this limit,
-  // L1 will start evicting
-  size_t cacheSizeLimit{};
-
-  // Throttler config of size controller
-  util::Throttler::Config sizeControllerThrottlerConfig{};
-
-  // Enable event tracker. This will log all relevant cache events.
-  using Key = KAllocation::Key;
-  using EventTrackerSharedPtr = std::shared_ptr<EventInterface<Key>>;
-  EventTrackerSharedPtr eventTracker{nullptr};
-
-  ObjectCacheConfig& setEventTracker(EventTrackerSharedPtr&& ptr) {
-    eventTracker = std::move(ptr);
-    return *this;
-  }
-
-  // You MUST set this callback to release the removed/evicted/expired objects
-  // memory; otherwise, memory leak will happen.
-  // 1) store a single type Foo
-  // config.setItemDestructor([&](ObjectCacheDestructorData data) {
-  //         data.deleteObject<Foo>();
-  //     }
-  // });
-  //
-  // 2) store multiple types
-  // one way to do that is to encode the type in the key.
-  // Example:
-  // enum class user_defined_ObjectType {Foo1, Foo2, Foo3 };
-  //
-  // config.setItemDestructor([&](ObjectCacheDestructorData data) {
-  //     switch (user_defined_getType(data.key)) {
-  //       case ObjectType::Foo1:
-  //         data.deleteObject<Foo1>();
-  //         break;
-  //       case ObjectType::Foo2:
-  //         data.deleteObject<Foo2>();
-  //         break;
-  //       case ObjectType::Foo3:
-  //         data.deleteObject<Foo3>();
-  //         break;
-  //       ...
-  //     }
-  // });
-  using ItemDestructor = std::function<void(ObjectCacheDestructorData)>;
-  ItemDestructor itemDestructor{};
-
-  ObjectCacheConfig& setItemDestructor(ItemDestructor destructor) {
-    itemDestructor = std::move(destructor);
-    return *this;
-  }
+  // the expiry time of the object
+  uint32_t expiryTime;
 };
 
 template <typename AllocatorT>
@@ -152,18 +96,67 @@ class ObjectCache : public ObjectCacheBase<AllocatorT> {
   // make constructor private, but constructable by std::make_unique
   struct InternalConstructor {};
 
+  template <typename T>
+  class Deleter {
+   public:
+    using ReadHandle = typename AllocatorT::ReadHandle;
+    using WriteHandle = typename AllocatorT::WriteHandle;
+    using Handle = std::variant<ReadHandle, WriteHandle>;
+
+    explicit Deleter(typename AllocatorT::ReadHandle&& hdl)
+        : hdl_(std::move(hdl)) {}
+    explicit Deleter(typename AllocatorT::WriteHandle&& hdl)
+        : hdl_(std::move(hdl)) {}
+
+    void operator()(T*) {
+      // Just release the handle.
+      // Cache destorys object when all handles released.
+      std::holds_alternative<ReadHandle>(hdl_)
+          ? std::get<ReadHandle>(hdl_).reset()
+          : std::get<WriteHandle>(hdl_).reset();
+    }
+
+    WriteHandle& getWriteHandleRef() {
+      if (std::holds_alternative<ReadHandle>(hdl_)) {
+        hdl_ = std::move(std::get<ReadHandle>(hdl_)).toWriteHandle();
+      }
+      return std::get<WriteHandle>(hdl_);
+    }
+
+    ReadHandle& getReadHandleRef() {
+      return std::holds_alternative<ReadHandle>(hdl_)
+                 ? std::get<ReadHandle>(hdl_)
+                 : std::get<WriteHandle>(hdl_);
+    }
+
+   private:
+    Handle hdl_;
+  };
+
  public:
+  using ItemDestructor = std::function<void(ObjectCacheDestructorData)>;
+  using Key = KAllocation::Key;
+  using Config = ObjectCacheConfig<ObjectCache<AllocatorT>>;
+  using EvictionPolicyConfig = typename AllocatorT::MMType::Config;
+  using Item = ObjectCacheItem;
+  using Serializer = ObjectSerializer<ObjectCache<AllocatorT>>;
+  using Deserializer = ObjectDeserializer<ObjectCache<AllocatorT>>;
+  using SerializeCb = std::function<std::unique_ptr<folly::IOBuf>(Serializer)>;
+  using DeserializeCb = std::function<bool(Deserializer)>;
+  using Persistor = Persistor<ObjectCache<AllocatorT>>;
+  using Restorer = Restorer<ObjectCache<AllocatorT>>;
+  using EvictionIterator = typename AllocatorT::EvictionIterator;
+
   enum class AllocStatus { kSuccess, kAllocError, kKeyAlreadyExists };
 
-  explicit ObjectCache(InternalConstructor, const ObjectCacheConfig& config)
-      : config_{config} {}
+  explicit ObjectCache(InternalConstructor, const Config& config)
+      : config_(config.validate()) {}
 
   // Create an ObjectCache to store objects of one or more types
   //    - ItemDestructor must be set from ObjectCacheConfig
   //    - Inside ItemDestructor, `ctx.deleteObject<T>()` must be called to
   //      delete the objects (also see example in ObjectCacheConfig)
-  static std::unique_ptr<ObjectCache<AllocatorT>> create(
-      ObjectCacheConfig config);
+  static std::unique_ptr<ObjectCache<AllocatorT>> create(Config config);
 
   ~ObjectCache();
 
@@ -194,22 +187,20 @@ class ObjectCache : public ObjectCacheBase<AllocatorT> {
   //                     if objectSizeTracking is enabled, a non-zero value must
   //                     be passed.
   // @param ttlSecs      object expiring seconds.
-  // @param replacedPtr  a pointer to a shared_ptr, if it is not nullptr it will
-  //                     be assigned to the replaced object.
   //
   // @throw cachelib::exception::RefcountOverflow if the item we are replacing
   //        is already out of refcounts.
   // @throw std::invalid_argument if objectSizeTracking is enabled but
   //        objectSize is 0.
-  // @return a pair of allocation status and shared_ptr of newly inserted
-  //         object.
+  // @return a tuple of allocation status, shared_ptr of newly inserted
+  //         object and shared_ptr of old object that has been replaced (nullptr
+  //         if no replacement happened)
   template <typename T>
-  std::pair<AllocStatus, std::shared_ptr<T>> insertOrReplace(
-      folly::StringPiece key,
-      std::unique_ptr<T> object,
-      size_t objectSize = 0,
-      uint32_t ttlSecs = 0,
-      std::shared_ptr<T>* replacedPtr = nullptr);
+  std::tuple<AllocStatus, std::shared_ptr<T>, std::shared_ptr<T>>
+  insertOrReplace(folly::StringPiece key,
+                  std::unique_ptr<T> object,
+                  size_t objectSize = 0,
+                  uint32_t ttlSecs = 0);
 
   // Insert the object into the cache with given key. If the key exists in the
   // cache, the new object won't be inserted.
@@ -238,11 +229,23 @@ class ObjectCache : public ObjectCacheBase<AllocatorT> {
   // @param key   the key to the object.
   void remove(folly::StringPiece key);
 
+  // Persist all non-expired objects in the cache if cache persistence is
+  // enabled.
+  // No-op if cache persistence is not enabled.
+  // @return false if no persistence happened
+  bool persist();
+
+  // Recover non-expired objects to the cache if cache persistence is
+  // enabled.
+  // No-op if cache persistence is not enabled.
+  // @return false if no recovery happened
+  bool recover();
+
   // Get all the stats related to object-cache
   // @param visitor   callback that will be invoked with
   //                  {stat-name, value} for each stat
   void getObjectCacheCounters(
-      std::function<void(folly::StringPiece, uint64_t)> visitor) const override;
+      const util::CounterVisitor& visitor) const override;
 
   // Return the number of objects in cache
   uint64_t getNumEntries() const {
@@ -266,6 +269,93 @@ class ObjectCache : public ObjectCacheBase<AllocatorT> {
     return sizeController_ == nullptr
                ? config_.l1EntriesLimit
                : sizeController_->getCurrentEntriesLimit();
+  }
+
+  // Get the expiry timestamp of the object
+  // @param  object   object shared pointer returned from ObjectCache APIs
+  //
+  // @return the expiry timestamp in seconds of the object
+  //         0 if object is nullptr
+  template <typename T>
+  uint32_t getExpiryTimeSec(const std::shared_ptr<T>& object) const {
+    if (object == nullptr) {
+      return 0;
+    }
+    return getReadHandleRefInternal<T>(object)->getExpiryTime();
+  }
+
+  // Get the configured TTL of the object
+  // @param  object   object shared pointer returned from ObjectCache APIs
+  //
+  // @return the configured TTL in seconds of the object
+  //         0 if object is nullptr
+  template <typename T>
+  std::chrono::seconds getConfiguredTtl(
+      const std::shared_ptr<T>& object) const {
+    if (object == nullptr) {
+      return std::chrono::seconds{0};
+    }
+    return getReadHandleRefInternal<T>(object)->getConfiguredTTL();
+  }
+
+  // Update the expiry timestamp of an object
+  //
+  // @param  object         object shared pointer returned from ObjectCache APIs
+  // @param  expiryTimeSecs the expiryTime in seconds to update
+  //
+  // @return boolean indicating whether expiry time was successfully updated
+  template <typename T>
+  bool updateExpiryTimeSec(std::shared_ptr<T>& object,
+                           uint32_t expiryTimeSecs) {
+    if (object == nullptr) {
+      return false;
+    }
+    return getWriteHandleRefInternal<T>(object)->updateExpiryTime(
+        expiryTimeSecs);
+  }
+
+  // Update expiry time to @ttl seconds from now.
+  //
+  // @param  object    object shared pointer returned from ObjectCache APIs
+  // @param  ttl       TTL in seconds (from now)
+  //
+  // @return boolean indicating whether TTL was successfully extended
+  template <typename T>
+  bool extendTtl(std::shared_ptr<T>& object, std::chrono::seconds ttl) {
+    if (object == nullptr) {
+      return false;
+    }
+    return getWriteHandleRefInternal<T>(object)->extendTTL(ttl);
+  }
+
+  // Mutate object and update the object size
+  // When size-awareness is enabled, users must call this API to mutate the
+  // object. Otherwise, we won't be able to track the updated object size
+  //
+  // @param  object       shared pointer of the object to be mutated (must be
+  //                      fetched from ObjectCache APIs)
+  // @param  mutateCb     callback containing the mutation logic
+  // @param  mutateCtx    context string of this mutation operation, for
+  //                      logging purpose
+  template <typename T>
+  void mutateObject(const std::shared_ptr<T>& object,
+                    std::function<void()> mutateCb,
+                    const std::string& mutateCtx = "");
+
+  // Get the size of the object
+  //
+  // @param  object       object shared pointer returned from ObjectCache APIs
+  //
+  // @return the object size if size-awareness is enabled
+  //         0 otherwise
+  template <typename T>
+  size_t getObjectSize(const std::shared_ptr<T>& object) const {
+    if (!object) {
+      return 0;
+    }
+    return reinterpret_cast<const ObjectCacheItem*>(
+               getReadHandleRefInternal<T>(object)->getMemory())
+        ->objectSize;
   }
 
  protected:
@@ -308,8 +398,35 @@ class ObjectCache : public ObjectCacheBase<AllocatorT> {
   bool stopSizeController(std::chrono::seconds timeout = std::chrono::seconds{
                               0});
 
+  // Get a ReadHandle reference from the object shared_ptr
+  template <typename T>
+  typename AllocatorT::ReadHandle& getReadHandleRefInternal(
+      const std::shared_ptr<T>& object) const {
+    auto* deleter = std::get_deleter<Deleter<T>>(object);
+    XDCHECK(deleter != nullptr);
+    auto& hdl = deleter->getReadHandleRef();
+    XDCHECK(hdl != nullptr);
+    return hdl;
+  }
+
+  // Get a WriteHandle reference from the object shared_ptr
+  template <typename T>
+  typename AllocatorT::WriteHandle& getWriteHandleRefInternal(
+      const std::shared_ptr<T>& object) {
+    auto* deleter = std::get_deleter<Deleter<T>>(object);
+    XDCHECK(deleter != nullptr);
+    auto& hdl = deleter->getWriteHandleRef();
+    XDCHECK(hdl != nullptr);
+    return hdl;
+  }
+
+  EvictionIterator getEvictionIterator(PoolId pid) const noexcept {
+    auto& mmContainer = this->l1Cache_->getMMContainer(pid, 0 /* classId */);
+    return mmContainer.getEvictionIterator();
+  }
+
   // Config passed to the cache.
-  ObjectCacheConfig config_{};
+  Config config_{};
 
   // Number of shards (LRUs) to lessen the contention on L1 cache
   size_t l1NumShards_{};
@@ -336,6 +453,8 @@ class ObjectCache : public ObjectCacheBase<AllocatorT> {
 
   template <typename AllocatorT2>
   friend class ObjectCacheSizeController;
+
+  friend Persistor;
 };
 } // namespace objcache2
 } // namespace cachelib

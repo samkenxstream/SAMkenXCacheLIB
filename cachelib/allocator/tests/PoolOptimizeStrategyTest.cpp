@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -66,10 +66,12 @@ TEST_F(PoolOptimizeStrategy2QTest, MarginalHitsRegularPoolOptimize) {
 
   // always promote
   mmConfig.lruRefreshTime = 0;
-  auto p0 = cache->addPool("Pool0", cache->getCacheMemoryStats().cacheSize / 2,
-                           allocSizes, mmConfig);
-  auto p1 = cache->addPool("Pool1", cache->getCacheMemoryStats().cacheSize / 2,
-                           allocSizes, mmConfig);
+  auto p0 =
+      cache->addPool("Pool0", cache->getCacheMemoryStats().ramCacheSize / 2,
+                     allocSizes, mmConfig);
+  auto p1 =
+      cache->addPool("Pool1", cache->getCacheMemoryStats().ramCacheSize / 2,
+                     allocSizes, mmConfig);
   ASSERT_NE(Slab::kInvalidPoolId, p0);
   ASSERT_NE(Slab::kInvalidPoolId, p1);
 

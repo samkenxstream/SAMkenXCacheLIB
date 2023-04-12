@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,7 +39,7 @@ using LruObjectCache =
 std::unique_ptr<LruObjectCache> createCache(LruObjectCache::Config config) {
   auto objcache = std::make_unique<LruObjectCache>(config);
   objcache->getCacheAlloc().addPool(
-      "default", objcache->getCacheAlloc().getCacheMemoryStats().cacheSize);
+      "default", objcache->getCacheAlloc().getCacheMemoryStats().ramCacheSize);
   return objcache;
 }
 } // namespace

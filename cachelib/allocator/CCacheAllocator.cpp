@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -36,7 +36,9 @@ CCacheAllocator::CCacheAllocator(MemoryAllocator& allocator,
       currentChunksIndex_(0) {
   auto& currentChunks = chunks_[currentChunksIndex_];
   for (auto chunk : *object.chunks()) {
-    currentChunks.push_back(allocator_.unCompress(CompressedPtr(chunk)));
+    // TODO : pass multi-tier flag when compact cache supports multi-tier config
+    currentChunks.push_back(
+        allocator_.unCompress(CompressedPtr(chunk), false /* isMultiTier */));
   }
 }
 
@@ -97,7 +99,9 @@ CCacheAllocator::SerializationType CCacheAllocator::saveState() {
 
   std::lock_guard<std::mutex> guard(resizeLock_);
   for (auto chunk : getCurrentChunks()) {
-    object.chunks()->push_back(allocator_.compress(chunk).saveState());
+    // TODO : pass multi-tier flag when compact cache supports multi-tier config
+    object.chunks()->push_back(
+        allocator_.compress(chunk, false /* isMultiTier */).saveState());
   }
   return object;
 }

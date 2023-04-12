@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -105,6 +105,14 @@ class HotHashDetector {
   // @return        non-zero if the hash is hot. Higher numbers mean even
   //                hotter, but any non-zero result here means it's very hot.
   uint8_t bumpHash(uint64_t hash);
+
+  // Read-only method to check the hotness of a key-hash.
+  //
+  // @param hash    hash value of an item. Zero is a valid value for hash, but
+  //                may cause false positives.
+  //
+  // @return        True if the hash is hot.
+  bool isHotHash(uint64_t hash) const;
 
   // Manually trigger the data structure maintenance procedure.
   void doMaintenance();

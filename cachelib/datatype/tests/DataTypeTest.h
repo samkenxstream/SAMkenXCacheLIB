@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,7 +34,7 @@ struct DataTypeTest {
     config.configureChainedItems();
     config.setCacheSize(100 * Slab::kSize);
     auto cache = std::make_unique<AllocatorT>(config);
-    const size_t numBytes = cache->getCacheMemoryStats().cacheSize;
+    const size_t numBytes = cache->getCacheMemoryStats().ramCacheSize;
     cache->addPool(kDefaultPool, numBytes);
     return cache;
   }

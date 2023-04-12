@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,6 +31,7 @@ StressorConfig::StressorConfig(const folly::dynamic& configJson) {
 
   JSONSetVal(configJson, enableLookaside);
   JSONSetVal(configJson, onlySetIfMiss);
+  JSONSetVal(configJson, ignoreOpCount);
   JSONSetVal(configJson, populateItem);
   JSONSetVal(configJson, samplingIntervalMs);
 
@@ -45,6 +46,7 @@ StressorConfig::StressorConfig(const folly::dynamic& configJson) {
   JSONSetVal(configJson, opDelayNs);
 
   JSONSetVal(configJson, opRatePerSec);
+  JSONSetVal(configJson, opRateBurstSize);
 
   JSONSetVal(configJson, opPoolDistribution);
   JSONSetVal(configJson, keyPoolDistribution);
@@ -52,6 +54,7 @@ StressorConfig::StressorConfig(const folly::dynamic& configJson) {
   JSONSetVal(configJson, maxInconsistencyCount);
 
   JSONSetVal(configJson, traceFileName);
+  JSONSetVal(configJson, traceFileNames);
   JSONSetVal(configJson, configPath);
 
   JSONSetVal(configJson, cachePieceSize);
@@ -77,10 +80,15 @@ StressorConfig::StressorConfig(const folly::dynamic& configJson) {
         ReplayGeneratorConfig{configJson["replayGeneratorConfig"]};
   }
 
+  if (!traceFileName.empty() && !traceFileNames.empty()) {
+    throw std::invalid_argument(
+        folly::sformat("set only one of traceFileName or traceFileNames"));
+  }
+
   // If you added new fields to the configuration, update the JSONSetVal
   // to make them available for the json configs and increment the size
   // below
-  checkCorrectSize<StressorConfig, 456>();
+  checkCorrectSize<StressorConfig, 496>();
 }
 
 bool StressorConfig::usesChainedItems() const {
@@ -157,6 +165,7 @@ DistributionConfig::DistributionConfig(const folly::dynamic& jsonConfig,
   JSONSetVal(jsonConfig, loneGetRatio);
   JSONSetVal(jsonConfig, loneSetRatio);
   JSONSetVal(jsonConfig, updateRatio);
+  JSONSetVal(jsonConfig, couldExistRatio);
 
   auto readFile = [&](const std::string& f) {
     std::string str;
@@ -181,10 +190,11 @@ DistributionConfig::DistributionConfig(const folly::dynamic& jsonConfig,
     JSONSetVal(configJsonPop, popularityWeights);
   }
 
-  checkCorrectSize<DistributionConfig, 360>();
+  checkCorrectSize<DistributionConfig, 368>();
 }
 
 ReplayGeneratorConfig::ReplayGeneratorConfig(const folly::dynamic& configJson) {
+  JSONSetVal(configJson, ampFactor);
   JSONSetVal(configJson, replaySerializationMode);
   JSONSetVal(configJson, relaxedSerialIntervalMs);
   JSONSetVal(configJson, numAggregationFields);
@@ -203,7 +213,7 @@ ReplayGeneratorConfig::ReplayGeneratorConfig(const folly::dynamic& configJson) {
         "Unsupported request serialization mode: {}", replaySerializationMode));
   }
 
-  checkCorrectSize<ReplayGeneratorConfig, 120>();
+  checkCorrectSize<ReplayGeneratorConfig, 128>();
 }
 
 ReplayGeneratorConfig::SerializeMode

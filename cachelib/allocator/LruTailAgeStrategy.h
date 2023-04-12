@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -95,10 +95,14 @@ class LruTailAgeStrategy : public RebalanceStrategy {
     return config_;
   }
 
-  RebalanceContext pickVictimAndReceiverImpl(const CacheBase& cache,
-                                             PoolId pid) override final;
+  RebalanceContext pickVictimAndReceiverImpl(
+      const CacheBase& cache,
+      PoolId pid,
+      const PoolStats& poolStats) override final;
 
-  ClassId pickVictimImpl(const CacheBase& cache, PoolId pid) override final;
+  ClassId pickVictimImpl(const CacheBase& cache,
+                         PoolId pid,
+                         const PoolStats& poolStats) override final;
 
  private:
   static AllocInfo makeAllocInfo(PoolId pid,

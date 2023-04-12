@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,6 +26,9 @@ namespace navy {
 class Engine {
  public:
   virtual ~Engine() = default;
+
+  // return the size of usable space
+  virtual uint64_t getSize() const = 0;
 
   // Returns true if the entry could exist. False if the entry definitely does
   // not exist.
@@ -60,6 +63,10 @@ class Engine {
 
   // Gets the maximum item size that can be inserted into the engine.
   virtual uint64_t getMaxItemSize() const = 0;
+
+  // Get key and Buffer for a random sample
+  virtual std::pair<Status, std::string /* key */> getRandomAlloc(
+      Buffer& value) = 0;
 };
 } // namespace navy
 } // namespace cachelib

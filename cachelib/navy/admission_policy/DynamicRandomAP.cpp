@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,6 +35,9 @@ namespace {
 double clamp(double input, double lower, double upper) {
   return std::min(std::max(input, lower), upper);
 }
+
+// Returns the difference between a and b if non-negative. Otherwise return 0.
+uint64_t minus(uint64_t a, uint64_t b) { return a < b ? 0ULL : a - b; }
 } // namespace
 DynamicRandomAP::Config& DynamicRandomAP::Config::validate() {
   if (targetRate == 0) {
@@ -84,6 +87,7 @@ DynamicRandomAP::DynamicRandomAP(Config&& config, ValidConfigTag)
       fnBytesWritten_{std::move(config.fnBytesWritten)},
       lowerBound_{config.probFactorLowerBound},
       upperBound_{config.probFactorUpperBound},
+      fnBypass_{std::move(config.fnBypass)},
       rg_{config.seed},
       deterministicKeyHashSuffixLength_{
           config.deterministicKeyHashSuffixLength} {
@@ -97,22 +101,29 @@ DynamicRandomAP::DynamicRandomAP(Config&& config, ValidConfigTag)
 
 bool DynamicRandomAP::accept(HashedKey hk, BufferView value) {
   const auto curTime = getSteadyClockSeconds();
-  auto params = getThrottleParams();
-  if (curTime - params.updateTime >= updateInterval_) {
+  if (curTime - params_.updateTime >= updateInterval_) {
     // Lots of threads can get into this section. First to grab the lock will
     // update. Let proceed the rest.
     std::unique_lock<folly::SharedMutex> lock{mutex_, std::try_to_lock};
     if (lock.owns_lock()) {
-      updateThrottleParams(curTime);
+      updateThrottleParamsLocked(curTime);
     }
   }
+  uint64_t size = hk.key().size() + value.size();
+  if (fnBypass_ && fnBypass_(hk.key())) {
+    bypassedBytes_.add(size);
+    return true;
+  }
 
-  auto baseProb = getBaseProbability(hk.key().size() + value.size());
-  baseProbStats_.trackValue(baseProb * 100);
-  auto probability = baseProb * params.probabilityFactor;
+  auto baseProb = getBaseProbability(size);
+  auto probability = baseProb * params_.probabilityFactor;
   probability = std::max(0.0, std::min(1.0, probability));
 
-  return probability == 1 || genF(hk) < probability;
+  bool accepted = probability == 1 || genF(hk) < probability;
+  if (accepted) {
+    acceptedBytes_.add(size);
+  }
+  return accepted;
 }
 
 // generate a value between [0, 1)
@@ -135,16 +146,18 @@ void DynamicRandomAP::reset() {
 
   params_.updateTime = startupTime_;
   params_.probabilityFactor = probabilitySeed_;
-  params_.curTargetRate = 0;
-  params_.bytesWrittenLastUpdate = fnBytesWritten_();
+  writeStats_.curTargetRate = 0;
+  writeStats_.bytesWrittenLastUpdate = fnBytesWritten_();
+  writeStats_.bytesAcceptedLastUpdate = acceptedBytes_.get();
+  writeStats_.bytesBypassedLastUpdate = bypassedBytes_.get();
 }
 
 void DynamicRandomAP::update() {
   std::unique_lock<folly::SharedMutex> lock{mutex_};
-  updateThrottleParams(getSteadyClockSeconds());
+  updateThrottleParamsLocked(getSteadyClockSeconds());
 }
 
-void DynamicRandomAP::updateThrottleParams(std::chrono::seconds curTime) {
+void DynamicRandomAP::updateThrottleParamsLocked(std::chrono::seconds curTime) {
   constexpr uint64_t kSecondsInDay{3600 * 24};
 
   auto updateTimeDelta = (curTime - params_.updateTime).count();
@@ -156,9 +169,10 @@ void DynamicRandomAP::updateThrottleParams(std::chrono::seconds curTime) {
 
   params_.updateTime = curTime;
   auto bytesWritten = fnBytesWritten_();
-  params_.observedCurRate_ =
-      (bytesWritten - params_.bytesWrittenLastUpdate) / updateTimeDelta;
-  if (params_.observedCurRate_ == 0) {
+  auto bytesWrittenDiff = bytesWritten - writeStats_.bytesWrittenLastUpdate;
+  writeStats_.observedCurRate = bytesWrittenDiff / updateTimeDelta;
+  // There is no bytes observed from device, skip this update.
+  if (writeStats_.observedCurRate == 0) {
     return;
   }
 
@@ -178,18 +192,57 @@ void DynamicRandomAP::updateThrottleParams(std::chrono::seconds curTime) {
           maxRate_, curTargetRate);
     curTargetRate = maxRate_;
   }
-  params_.curTargetRate = curTargetRate;
+  writeStats_.curTargetRate = curTargetRate;
 
-  auto rawProbFactor = fdiv(static_cast<double>(curTargetRate),
-                            static_cast<double>(params_.observedCurRate_));
+  // Find the target rate for regular traffic.
+  // First calculate accepted and bypassed rate in the past window.
+  auto acceptedBytes = acceptedBytes_.get();
+  auto acceptedBytesDiff = acceptedBytes - writeStats_.bytesAcceptedLastUpdate;
+  writeStats_.acceptedRate = acceptedBytesDiff / updateTimeDelta;
+  writeStats_.bytesAcceptedLastUpdate = acceptedBytes;
+
+  auto bypassedBytes = bypassedBytes_.get();
+  auto bypassedBytesDiff = bypassedBytes - writeStats_.bytesBypassedLastUpdate;
+  writeStats_.bypassedRate = bypassedBytesDiff / updateTimeDelta;
+  writeStats_.bytesBypassedLastUpdate = bypassedBytes;
+
+  auto totalBytes = acceptedBytesDiff + bypassedBytesDiff;
+
+  // Calculate the target rate and observed rate for regular traffic.
+  uint64_t trueTargetRate = 0;
+  uint64_t trueObservedRate = 0;
+  // There's no accepted/bypassed traffic but observed some writes. Treat those
+  // as bypassed traffic.
+  if (totalBytes == 0) {
+    trueTargetRate = minus(curTargetRate, writeStats_.observedCurRate);
+    trueObservedRate = 0ULL;
+  } else {
+    // Ratio of regular traffic over all accepted traffic.
+    double ratio = fdiv(acceptedBytesDiff, totalBytes);
+    // Write ampflication factor: the ratio between bytes recorded by the device
+    // and bytes recorded by admission policy.
+    // There is another write amplification from bytes recorded by the device to
+    // the actual physical writes, which is not being accounted here.
+    double waf = fdiv(bytesWrittenDiff, totalBytes);
+
+    trueTargetRate = minus(writeStats_.curTargetRate,
+                           bypassedBytesDiff * waf / updateTimeDelta);
+    trueObservedRate = writeStats_.observedCurRate * ratio;
+  }
+  // There is no observed regular traffic. Skip this update.
+  if (trueObservedRate == 0ULL) {
+    return;
+  }
+  auto rawProbFactor = fdiv(static_cast<double>(trueTargetRate),
+                            static_cast<double>(trueObservedRate));
   params_.probabilityFactor =
       clampFactor(params_.probabilityFactor * clampFactorChange(rawProbFactor));
   XLOG_EVERY_MS(INFO, 60000)
-      << "observed current write rate = " << params_.observedCurRate_
+      << "observed current write rate = " << writeStats_.observedCurRate
       << ", target current rate = " << curTargetRate
       << " rawProbFactor = " << rawProbFactor
       << ", probFactor = " << params_.probabilityFactor;
-  params_.bytesWrittenLastUpdate = bytesWritten;
+  writeStats_.bytesWrittenLastUpdate = bytesWritten;
 }
 
 double DynamicRandomAP::clampFactorChange(double change) const {
@@ -208,21 +261,28 @@ double DynamicRandomAP::getBaseProbability(uint64_t size) const {
 }
 
 DynamicRandomAP::ThrottleParams DynamicRandomAP::getThrottleParams() const {
-  std::shared_lock<folly::SharedMutex> lock{mutex_};
   return params_;
 }
 
+DynamicRandomAP::WriteStats DynamicRandomAP::getWriteStats() const {
+  return writeStats_;
+}
+
 void DynamicRandomAP::getCounters(const CounterVisitor& visitor) const {
-  auto params = getThrottleParams();
+  auto writeStats = getWriteStats();
   visitor("navy_ap_write_rate_target_configured",
           static_cast<double>(targetRate_));
   visitor("navy_ap_write_rate_max_configured", static_cast<double>(maxRate_));
   visitor("navy_ap_write_rate_adjusted_target",
-          static_cast<double>(params.curTargetRate));
+          static_cast<double>(writeStats.curTargetRate));
   visitor("navy_ap_prob_factor_x100", params_.probabilityFactor * 100);
-  baseProbStats_.visitQuantileEstimator(visitor, "navy_ap_baseProx_x100");
   visitor("navy_ap_write_rate_observed",
-          static_cast<double>(params_.observedCurRate_));
+          static_cast<double>(writeStats.observedCurRate));
+
+  visitor("navy_ap_accepted_rate",
+          static_cast<double>(writeStats.acceptedRate));
+  visitor("navy_ap_bypassed_rate",
+          static_cast<double>(writeStats.bypassedRate));
 }
 } // namespace navy
 } // namespace cachelib

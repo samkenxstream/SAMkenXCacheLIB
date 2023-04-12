@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -72,6 +72,7 @@ struct DistributionConfig : public JSONConfig {
   double loneGetRatio{0.0};
   double loneSetRatio{0.0};
   double updateRatio{0.0};
+  double couldExistRatio{0.0};
 
   bool usesChainedItems() const { return addChainedRatio > 0; }
 
@@ -122,6 +123,8 @@ struct ReplayGeneratorConfig : public JSONConfig {
     none,
   };
   std::string replaySerializationMode{"strict"};
+
+  uint32_t ampFactor{1};
 
   // The time interval threshold when replaySerializationMode is relaxed.
   uint64_t relaxedSerialIntervalMs{500};
@@ -180,6 +183,9 @@ struct StressorConfig : public JSONConfig {
   // follow get misses with a set
   bool enableLookaside{false};
 
+  // ignore opCount and does not repeat operations
+  bool ignoreOpCount{false};
+
   // only set a key in the cache if the key already doesn't exist
   // this is useful for replaying traces with both get and set, and also
   // for manually configured synthetic workloads.
@@ -208,12 +214,15 @@ struct StressorConfig : public JSONConfig {
   uint64_t numThreads{0}; // number of threads that will run
   uint64_t numKeys{0};    // number of keys that will be used
 
+  // Req generation throttling delay for each thread; those generated reqs are
+  // subject to an additional global rate shaping specified below (opRatePerSec)
   uint64_t opDelayBatch{0}; // how many requests before a delay is added
   uint64_t opDelayNs{0};    // nanoseconds delay between each operation
 
-  // Max number of operations per second. We use token bucket for limiting the
-  // rate, and this value will be used as both rate and burst.
+  // Max overall number of operations per second (global); the token bucket
+  // is used for limiting/shaping the global req rate
   uint64_t opRatePerSec{0};
+  uint64_t opRateBurstSize{0};
 
   // Distribution of operations across the pools in cache
   // This cannot exceed the number of pools in cache
@@ -229,6 +238,7 @@ struct StressorConfig : public JSONConfig {
   // Supported formats include specifying an absolute filename and filename
   // relative to the configPath
   std::string traceFileName{};
+  std::vector<std::string> traceFileNames{};
 
   // location of the path for the files referenced inside the json. If not
   // specified, it defaults to the path of the json file being parsed.

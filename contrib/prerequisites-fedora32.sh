@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ sudo dnf -y install bison flex patch bzip2 cmake \
   zlib-devel lz4-devel xz-devel bzip2-devel \
   jemalloc-devel snappy-devel libsodium-devel libdwarf-devel libaio-devel \
   gmock-devel gflags-devel gtest gtest-devel \
+  numactl-devel \
   fmt fmt-devel
 
 # DO NOT INSTALL glog-devel - need to build from source for the glog-*.cmake files

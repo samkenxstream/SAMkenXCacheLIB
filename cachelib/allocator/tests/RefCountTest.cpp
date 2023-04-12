@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,6 +30,7 @@ class RefCountTest : public AllocTestBase {
  public:
   static void testMultiThreaded();
   static void testBasic();
+  static void testMarkForEvictionAndMoving();
 };
 
 void RefCountTest::testMultiThreaded() {
@@ -105,7 +106,7 @@ void RefCountTest::testBasic() {
 
   // Incrementing past the max will fail
   auto rawRef = ref.getRaw();
-  ASSERT_FALSE(ref.incRef());
+  ASSERT_THROW(ref.incRef(), std::overflow_error);
   ASSERT_EQ(rawRef, ref.getRaw());
 
   // Bumping up access ref shouldn't affect admin ref and flags
@@ -153,9 +154,11 @@ void RefCountTest::testBasic() {
   // conditionally set flags
   ASSERT_FALSE((ref.markMoving()));
   ref.markInMMContainer();
+  // only first one succeeds
   ASSERT_TRUE((ref.markMoving()));
-  ASSERT_FALSE((ref.isOnlyMoving()));
+  ASSERT_FALSE((ref.markMoving()));
   ref.unmarkInMMContainer();
+
   ref.template setFlag<RefcountWithFlags::Flags::kMMFlag0>();
   // Have no other admin refcount but with a flag still means "isOnlyMoving"
   ASSERT_TRUE((ref.isOnlyMoving()));
@@ -168,10 +171,79 @@ void RefCountTest::testBasic() {
   ASSERT_FALSE(ref.isChainedItem());
   ASSERT_TRUE((ref.isOnlyMoving()));
 }
+
+void RefCountTest::testMarkForEvictionAndMoving() {
+  {
+    // cannot mark for eviction when not in MMContainer
+    RefcountWithFlags ref;
+    ASSERT_FALSE(ref.markForEviction());
+  }
+
+  {
+    // can mark for eviction when in MMContainer
+    // and unmarkForEviction return value contains admin bits
+    RefcountWithFlags ref;
+    ref.markInMMContainer();
+    ASSERT_TRUE(ref.markForEviction());
+    ASSERT_TRUE(ref.unmarkForEviction() > 0);
+  }
+
+  {
+    // cannot mark for eviction when moving
+    RefcountWithFlags ref;
+    ref.markInMMContainer();
+
+    ASSERT_TRUE(ref.markMoving());
+    ASSERT_FALSE(ref.markForEviction());
+
+    ref.unmarkInMMContainer();
+    auto ret = ref.unmarkMoving();
+    ASSERT_EQ(ret, 0);
+  }
+
+  {
+    // cannot mark moving when marked for eviction
+    RefcountWithFlags ref;
+    ref.markInMMContainer();
+
+    ASSERT_TRUE(ref.markForEviction());
+    ASSERT_FALSE(ref.markMoving());
+
+    ref.unmarkInMMContainer();
+    auto ret = ref.unmarkForEviction();
+    ASSERT_EQ(ret, 0);
+  }
+
+  {
+    // can mark moving when ref count > 0
+    RefcountWithFlags ref;
+    ref.markInMMContainer();
+
+    ref.incRef();
+
+    ASSERT_TRUE(ref.markMoving());
+
+    ref.unmarkInMMContainer();
+    auto ret = ref.unmarkMoving();
+    ASSERT_EQ(ret, 1);
+  }
+
+  {
+    // cannot mark for eviction when ref count > 0
+    RefcountWithFlags ref;
+    ref.markInMMContainer();
+
+    ref.incRef();
+    ASSERT_FALSE(ref.markForEviction());
+  }
+}
 } // namespace
 
 TEST_F(RefCountTest, MutliThreaded) { testMultiThreaded(); }
 TEST_F(RefCountTest, Basic) { testBasic(); }
+TEST_F(RefCountTest, MarkForEvictionAndMoving) {
+  testMarkForEvictionAndMoving();
+}
 } // namespace tests
 } // namespace cachelib
 } // namespace facebook

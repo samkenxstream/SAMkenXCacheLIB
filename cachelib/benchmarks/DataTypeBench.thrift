@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,11 +17,9 @@
 namespace cpp2 facebook.cachelib.datatypebench
 
 struct StdMap {
-  1: required map<i32, string> m,
+  1: required map<i32, string> m;
 }
 
 struct StdUnorderedMap {
-  1: required map<i32, string>
-  (cpp.template = "std::unordered_map")
-  m,
+  1: required map<i32, string> (cpp.template = "std::unordered_map") m;
 }

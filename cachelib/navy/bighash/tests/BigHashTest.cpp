@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,12 +14,14 @@
  * limitations under the License.
  */
 
+#include <folly/Random.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include <map>
 
 #include "cachelib/common/Hash.h"
+#include "cachelib/common/Utils.h"
 #include "cachelib/navy/bighash/BigHash.h"
 #include "cachelib/navy/driver/Driver.h"
 #include "cachelib/navy/testing/BufferGen.h"
@@ -42,6 +44,20 @@ namespace {
 void setLayout(BigHash::Config& config, uint32_t bs, uint32_t numBuckets) {
   config.bucketSize = bs;
   config.cacheSize = uint64_t{bs} * numBuckets;
+}
+
+// Generate key for given bucket index
+std::string genKey(uint32_t num_buckets, uint32_t bid) {
+  char keyBuf[64];
+  while (true) {
+    auto id = folly::Random::rand32();
+    sprintf(keyBuf, "key_%08X", id);
+    HashedKey hk(keyBuf);
+    if ((hk.keyHash() % num_buckets) == bid) {
+      break;
+    }
+  }
+  return keyBuf;
 }
 } // namespace
 
@@ -122,7 +138,6 @@ TEST(BigHash, SimpleStats) {
   {
     MockCounterVisitor helper;
     EXPECT_CALL(helper, call(_, _)).Times(AtLeast(0));
-    EXPECT_CALL(helper, call(strPiece("navy_bh_approx_bytes_in_size_64"), 8));
     EXPECT_CALL(helper, call(strPiece("navy_bh_items"), 1));
     EXPECT_CALL(helper, call(strPiece("navy_bh_inserts"), 1));
     EXPECT_CALL(helper, call(strPiece("navy_bh_succ_inserts"), 1));
@@ -137,14 +152,13 @@ TEST(BigHash, SimpleStats) {
     EXPECT_CALL(helper, call(strPiece("navy_bh_bf_false_positive_pct"), 0));
     EXPECT_CALL(helper, call(strPiece("navy_bh_checksum_errors"), 0));
     EXPECT_CALL(helper, call(strPiece("navy_bh_used_size_bytes"), 28));
-    bh.getCounters(toCallback(helper));
+    bh.getCounters({toCallback(helper)});
   }
 
   EXPECT_EQ(Status::Ok, bh.remove(makeHK("key")));
   {
     MockCounterVisitor helper;
     EXPECT_CALL(helper, call(_, _)).Times(AtLeast(0));
-    EXPECT_CALL(helper, call(strPiece("navy_bh_approx_bytes_in_size_64"), 0));
     EXPECT_CALL(helper, call(strPiece("navy_bh_items"), 0));
     EXPECT_CALL(helper, call(strPiece("navy_bh_inserts"), 1));
     EXPECT_CALL(helper, call(strPiece("navy_bh_succ_inserts"), 1));
@@ -159,7 +173,7 @@ TEST(BigHash, SimpleStats) {
     EXPECT_CALL(helper, call(strPiece("navy_bh_bf_false_positive_pct"), 0));
     EXPECT_CALL(helper, call(strPiece("navy_bh_checksum_errors"), 0));
     EXPECT_CALL(helper, call(strPiece("navy_bh_used_size_bytes"), 0));
-    bh.getCounters(toCallback(helper));
+    bh.getCounters({toCallback(helper)});
   }
 }
 
@@ -176,7 +190,6 @@ TEST(BigHash, EvictionStats) {
   {
     MockCounterVisitor helper;
     EXPECT_CALL(helper, call(_, _)).Times(AtLeast(0));
-    EXPECT_CALL(helper, call(strPiece("navy_bh_approx_bytes_in_size_64"), 13));
     EXPECT_CALL(helper, call(strPiece("navy_bh_items"), 1));
     EXPECT_CALL(helper, call(strPiece("navy_bh_inserts"), 2));
     EXPECT_CALL(helper, call(strPiece("navy_bh_succ_inserts"), 2));
@@ -190,7 +203,7 @@ TEST(BigHash, EvictionStats) {
     EXPECT_CALL(helper, call(strPiece("navy_bh_io_errors"), 0));
     EXPECT_CALL(helper, call(strPiece("navy_bh_bf_false_positive_pct"), 0));
     EXPECT_CALL(helper, call(strPiece("navy_bh_checksum_errors"), 0));
-    bh.getCounters(toCallback(helper));
+    bh.getCounters({toCallback(helper)});
   }
 }
 
@@ -221,7 +234,7 @@ TEST(BigHash, DeviceErrorStats) {
     EXPECT_CALL(helper, call(strPiece("navy_bh_io_errors"), 1));
     EXPECT_CALL(helper, call(strPiece("navy_bh_bf_false_positive_pct"), 0));
     EXPECT_CALL(helper, call(strPiece("navy_bh_checksum_errors"), 0));
-    bh.getCounters(toCallback(helper));
+    bh.getCounters({toCallback(helper)});
   }
 }
 
@@ -481,8 +494,8 @@ TEST(BigHash, RecoveryCorruptedData) {
   EXPECT_EQ(makeView("12345"), value.view());
 
   auto ioBuf = folly::IOBuf::createCombined(512);
-  std::generate(
-      ioBuf->writableData(), ioBuf->writableTail(), std::minstd_rand());
+  std::generate(ioBuf->writableData(), ioBuf->writableTail(),
+                std::minstd_rand());
 
   folly::IOBufQueue queue;
   auto rw = createMemoryRecordWriter(queue);
@@ -542,8 +555,8 @@ TEST(BigHash, BloomFilterRecoveryFail) {
 
   // After a bad recovery, filters will not be affected
   auto ioBuf = folly::IOBuf::createCombined(512);
-  std::generate(
-      ioBuf->writableData(), ioBuf->writableTail(), std::minstd_rand());
+  std::generate(ioBuf->writableData(), ioBuf->writableTail(),
+                std::minstd_rand());
 
   folly::IOBufQueue queue;
   auto rw = createMemoryRecordWriter(queue);
@@ -706,6 +719,48 @@ TEST(BigHash, DestructorCallbackOutsideLock) {
 
   done = true;
   t.join();
+}
+
+TEST(BigHash, RandomAlloc) {
+  BigHash::Config config;
+  setLayout(config, 1024, 4);
+  auto device = std::make_unique<NiceMock<MockDevice>>(config.cacheSize, 128);
+  config.device = device.get();
+
+  BigHash bh(std::move(config));
+
+  BufferGen bg;
+  auto data = bg.gen(40);
+  for (uint32_t bid = 0; bid < 4; bid++) {
+    for (size_t i = 0; i < 20; i++) {
+      auto keyStr = genKey(4, bid);
+      sprintf((char*)data.data(),
+              "data_%8s PAYLOAD: ", &keyStr[keyStr.size() - 8]);
+      EXPECT_EQ(Status::Ok, bh.insert(makeHK(keyStr.c_str()), data.view()));
+    }
+  }
+
+  size_t succ_cnt = 0;
+  std::unordered_map<std::string, size_t> getCnts;
+  static constexpr size_t loopCnt = 10000;
+  for (size_t i = 0; i < loopCnt; i++) {
+    Buffer value;
+    auto [status, keyStr] = bh.getRandomAlloc(value);
+    if (status != navy::Status::Ok) {
+      continue;
+    }
+    succ_cnt++;
+    getCnts[keyStr]++;
+  }
+
+  std::vector<size_t> cnts;
+  std::transform(
+      getCnts.begin(), getCnts.end(), std::back_inserter(cnts),
+      [](const std::pair<std::string, size_t>& p) { return p.second; });
+  auto [avg, stddev] = util::getMeanDeviation(cnts);
+
+  EXPECT_GT(succ_cnt, (size_t)((double)loopCnt * 0.8));
+  EXPECT_LT(stddev, avg * 0.2);
 }
 } // namespace tests
 } // namespace navy

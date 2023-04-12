@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -153,6 +153,7 @@ void Index::reset() {
     auto lock = std::lock_guard{getMutexOfBucket(i)};
     buckets_[i].clear();
   }
+  unAccessedItems_.set(0);
 }
 
 size_t Index::computeSize() const {

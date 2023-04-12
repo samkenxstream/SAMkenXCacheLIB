@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -210,7 +210,7 @@ class CacheAllocatorConfig {
   CacheAllocatorConfig& configureMemoryTiers(const MemoryTierConfigs& configs);
 
   // Return reference to MemoryTierCacheConfigs.
-  const MemoryTierConfigs& getMemoryTierConfigs();
+  const MemoryTierConfigs& getMemoryTierConfigs() const noexcept;
 
   // This turns on a background worker that periodically scans through the
   // access container and look for expired items and remove them.
@@ -241,10 +241,12 @@ class CacheAllocatorConfig {
   // slab memory distributed across different allocation classes. For example,
   // if the 64 bytes allocation classes are receiving for allocation requests,
   // eventually CacheAllocator will move more memory to it from other allocation
-  // classes. For more details, see our user guide.
+  // classes. The rebalancing is triggered every specified interval and
+  // optionally on allocation failures. For more details, see our user guide.
   CacheAllocatorConfig& enablePoolRebalancing(
       std::shared_ptr<RebalanceStrategy> defaultRebalanceStrategy,
-      std::chrono::milliseconds interval);
+      std::chrono::milliseconds interval,
+      bool disableForcedWakeup = false);
 
   // This lets you change pool size during runtime, and the pool resizer
   // will slowly adjust each pool's memory size to the newly configured sizes.
@@ -295,11 +297,6 @@ class CacheAllocatorConfig {
   // Library team if you find yourself customizing this.
   CacheAllocatorConfig& setThrottlerConfig(util::Throttler::Config config);
 
-  // Disable eviction. Not recommended unless you want to use cachelib as
-  // a in-memory storage. If you find yourself needing this, please come talk
-  // to Cache Library team. There is usually a better solutuon.
-  CacheAllocatorConfig& disableCacheEviction();
-
   // Passes in a callback to initialize an event tracker when the allocator
   // starts
   CacheAllocatorConfig& setEventTracker(EventTrackerSharedPtr&&);
@@ -311,13 +308,6 @@ class CacheAllocatorConfig {
 
   // Skip promote children items in chained when parent fail to promote
   CacheAllocatorConfig& setSkipPromoteChildrenWhenParentFailed();
-
-  // (deprecated) Disable cache eviction.
-  // Please do not create new callers. CacheLib will stop supporting disabled
-  // eviction.
-  [[deprecated]] CacheAllocatorConfig& deprecated_disableEviction();
-
-  bool isEvictionDisabled() const noexcept { return disableEviction; }
 
   // We will delay worker start until user explicitly calls
   // CacheAllocator::startCacheWorkers()
@@ -445,6 +435,9 @@ class CacheAllocatorConfig {
 
   // time interval to sleep between iterators of rebalancing the pools.
   std::chrono::milliseconds poolRebalanceInterval{std::chrono::seconds{1}};
+
+  // disable waking up the PoolRebalancer on alloc failures
+  bool poolRebalancerDisableForcedWakeUp{false};
 
   // Free slabs pro-actively if the ratio of number of freeallocs to
   // the number of allocs per slab in a slab class is above this
@@ -614,11 +607,6 @@ class CacheAllocatorConfig {
   // Configuration for memory tiers.
   MemoryTierConfigs memoryTierConfigs{
       {MemoryTierCacheConfig::fromShm().setRatio(1)}};
-
-  // if turned on, cache allocator will not evict any item when the
-  // system is out of memory. The user must free previously allocated
-  // items to make more room.
-  bool disableEviction = false;
 };
 
 template <typename T>
@@ -894,14 +882,8 @@ CacheAllocatorConfig<T>& CacheAllocatorConfig<T>::configureMemoryTiers(
 
 template <typename T>
 const typename CacheAllocatorConfig<T>::MemoryTierConfigs&
-CacheAllocatorConfig<T>::getMemoryTierConfigs() {
+CacheAllocatorConfig<T>::getMemoryTierConfigs() const noexcept {
   return memoryTierConfigs;
-}
-
-template <typename T>
-CacheAllocatorConfig<T>& CacheAllocatorConfig<T>::disableCacheEviction() {
-  disableEviction = true;
-  return *this;
 }
 
 template <typename T>
@@ -936,10 +918,12 @@ CacheAllocatorConfig<T>& CacheAllocatorConfig<T>::enablePoolOptimizer(
 template <typename T>
 CacheAllocatorConfig<T>& CacheAllocatorConfig<T>::enablePoolRebalancing(
     std::shared_ptr<RebalanceStrategy> defaultRebalanceStrategy,
-    std::chrono::milliseconds interval) {
+    std::chrono::milliseconds interval,
+    bool disableForcedWakeup) {
   if (validateStrategy(defaultRebalanceStrategy)) {
     defaultPoolRebalanceStrategy = defaultRebalanceStrategy;
     poolRebalanceInterval = interval;
+    poolRebalancerDisableForcedWakeUp = disableForcedWakeup;
   } else {
     throw std::invalid_argument(
         "Invalid rebalance strategy for the cache allocator.");
@@ -1024,12 +1008,6 @@ template <typename T>
 CacheAllocatorConfig<T>&
 CacheAllocatorConfig<T>::setSkipPromoteChildrenWhenParentFailed() {
   skipPromoteChildrenWhenParentFailed = true;
-  return *this;
-}
-
-template <typename T>
-CacheAllocatorConfig<T>& CacheAllocatorConfig<T>::deprecated_disableEviction() {
-  disableEviction = true;
   return *this;
 }
 
@@ -1162,7 +1140,6 @@ std::map<std::string, std::string> CacheAllocatorConfig<T>::serialize() const {
       std::to_string(memMonitorConfig.reclaimRateLimitWindowSecs.count());
   configMap["reaperInterval"] = util::toString(reaperInterval);
   configMap["mmReconfigureInterval"] = util::toString(mmReconfigureInterval);
-  configMap["disableEviction"] = std::to_string(disableEviction);
   configMap["evictionSearchTries"] = std::to_string(evictionSearchTries);
   configMap["thresholdForConvertingToIOBuf"] =
       std::to_string(thresholdForConvertingToIOBuf);

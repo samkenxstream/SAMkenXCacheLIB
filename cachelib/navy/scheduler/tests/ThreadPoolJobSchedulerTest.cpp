@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -248,12 +248,12 @@ TEST(ThreadPoolJobScheduler, MaxQueueLen) {
   // we have enqueued 1000 jobs across 4 queues. One job could be executed per
   // thread. So the max queue len would be 249 or 250 per queue.
   bool checked = false;
-  scheduler.getCounters([&](folly::StringPiece name, double stat) {
+  scheduler.getCounters({[&](folly::StringPiece name, double stat) {
     if (name == "navy_reader_pool_max_queue_len") {
       EXPECT_LE(numToQueue / numQueues - stat, 1);
       checked = true;
     }
-  });
+  }});
   EXPECT_TRUE(checked);
   sp.reached(0);
   scheduler.finish();

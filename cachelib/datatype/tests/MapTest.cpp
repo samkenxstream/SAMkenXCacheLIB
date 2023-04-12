@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -474,7 +474,7 @@ class MapTest : public ::testing::Test {
     config.setDefaultAllocSizes(util::generateAllocSizes(2, 1024 * 1024));
 
     auto cache = std::make_unique<AllocatorT>(config);
-    const size_t numBytes = cache->getCacheMemoryStats().cacheSize;
+    const size_t numBytes = cache->getCacheMemoryStats().ramCacheSize;
     const auto pid = cache->addPool("default", numBytes);
 
     using BasicMap = cachelib::Map<int, Value, AllocatorT>;
@@ -711,7 +711,7 @@ class MapTest : public ::testing::Test {
     config.configureChainedItems();
     config.setCacheSize(10 * Slab::kSize);
     auto cache = std::make_unique<AllocatorT>(config);
-    const size_t numBytes = cache->getCacheMemoryStats().cacheSize;
+    const size_t numBytes = cache->getCacheMemoryStats().ramCacheSize;
     cache->addPool("pool", numBytes);
 
     const auto pid = cache->getPoolId("pool");

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -41,4 +41,5 @@ sudo apt-get install -y \
   libdwarf-dev \
   libsodium-dev \
   libgmock-dev \
-  libgtest-dev googletest
+  libgtest-dev googletest \
+  libnuma-dev

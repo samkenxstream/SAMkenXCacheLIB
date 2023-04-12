@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -201,10 +201,6 @@ TYPED_TEST(BaseAllocatorTest, FastShutdownTestWithAbortedPoolRebalancer) {
 // test item sampling by getting a random item from memory
 TYPED_TEST(BaseAllocatorTest, ItemSampling) { this->testItemSampling(); }
 
-TYPED_TEST(BaseAllocatorTest, AllocateWithoutEviction) {
-  this->testAllocateWithoutEviction();
-}
-
 TYPED_TEST(BaseAllocatorTest, AllocateWithTTL) { this->testAllocateWithTTL(); }
 
 TYPED_TEST(BaseAllocatorTest, ExpiredFind) { this->testExpiredFind(); }
@@ -400,6 +396,12 @@ TYPED_TEST(BaseAllocatorTest, DelayWorkersStart) {
 
 TYPED_TEST(BaseAllocatorTest, SlabReleaseStuck) {
   this->testSlabReleaseStuck();
+}
+
+TYPED_TEST(BaseAllocatorTest, RateMap) { this->testRateMap(); }
+
+TYPED_TEST(BaseAllocatorTest, StatSnapshotTest) {
+  this->testStatSnapshotTest();
 }
 
 namespace { // the tests that cannot be done by TYPED_TEST.

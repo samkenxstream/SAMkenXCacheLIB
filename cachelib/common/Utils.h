@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,16 +17,159 @@
 #pragma once
 
 #include <folly/Format.h>
+#include <folly/Random.h>
+
+#include <unordered_map>
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
 #include <folly/Range.h>
 #pragma GCC diagnostic pop
 #include <folly/FileUtil.h>
 #include <folly/chrono/Hardware.h>
+#include <folly/logging/xlog.h>
+
+#include <numeric>
 
 namespace facebook {
 namespace cachelib {
 namespace util {
+
+// A wrapper class for functions to collect counters.
+// It can be initialized by either
+// 1. folly::StringPiece, double -> void, or
+// 2. folly::StringPiece, double, CounterType.
+// This allows counters to be collected and aggregated differently.
+class CounterVisitor {
+ public:
+  enum CounterType {
+    COUNT /* couters whose value can be exported directly */,
+    RATE /* counters whose value should be exported by delta */
+  };
+
+  CounterVisitor() { init(); }
+
+  /* implicit */ CounterVisitor(
+      std::function<void(folly::StringPiece, double)> biFn)
+      : biFn_(std::move(biFn)) {
+    init();
+  }
+
+  /* implicit */ CounterVisitor(
+      std::function<void(folly::StringPiece, double, CounterType)> triFn)
+      : triFn_(std::move(triFn)) {
+    init();
+  }
+
+  void operator()(folly::StringPiece name,
+                  double count,
+                  CounterType type) const {
+    XDCHECK_NE(nullptr, triFn_);
+    triFn_(name, count, type);
+  }
+
+  void operator()(folly::StringPiece name, double count) const {
+    XDCHECK_NE(nullptr, biFn_);
+    biFn_(name, count);
+  }
+
+  void operator=(std::function<void(folly::StringPiece, double)> biFn) {
+    biFn_ = biFn;
+    triFn_ = nullptr;
+    init();
+  }
+
+  void operator=(
+      std::function<void(folly::StringPiece, double, CounterType)> triFn) {
+    triFn_ = triFn;
+    biFn_ = nullptr;
+    init();
+  }
+
+ private:
+  // Initialize so that at most one of the functions is initialized.
+  void init() {
+    if (biFn_ && triFn_) {
+      throw std::invalid_argument(
+          "CounterVisitor can have at most one single function initialized.");
+    }
+    if (biFn_) {
+      triFn_ = [this](folly::StringPiece name, double count, CounterType) {
+        biFn_(name, count);
+      };
+    } else if (triFn_) {
+      biFn_ = [this](folly::StringPiece name, double count) {
+        triFn_(name, count, CounterType::COUNT);
+      };
+    } else {
+      // Create noop functions.
+      triFn_ = [](folly::StringPiece, double, CounterType) {};
+      biFn_ = [](folly::StringPiece, double) {};
+    }
+  }
+
+  // Function to collect all counters by value (COUNT).
+  std::function<void(folly::StringPiece name, double count)> biFn_;
+  // Function to collect counters by type.
+  std::function<void(folly::StringPiece name, double count, CounterType type)>
+      triFn_;
+};
+
+// A class to collect stats into, consisting of a map for counts and a map for
+// rates. Together with CounterVisitor, counters can be collected into the two
+// maps according to their types.
+class StatsMap {
+ public:
+  StatsMap() {}
+  StatsMap(const StatsMap&) = delete;
+  StatsMap(StatsMap&& o) noexcept {
+    countMap = std::move(o.countMap);
+    rateMap = std::move(o.rateMap);
+  }
+
+  void operator=(StatsMap&& o) noexcept {
+    countMap = std::move(o.countMap);
+    rateMap = std::move(o.rateMap);
+  }
+
+  // Insert a count stat
+  void insertCount(std::string key, double val) { countMap[key] = val; }
+
+  // Insert a rate stat
+  void insertRate(std::string key, double val) { rateMap[key] = val; }
+
+  const std::unordered_map<std::string, double>& getCounts() const {
+    return countMap;
+  }
+
+  const std::unordered_map<std::string, double>& getRates() const {
+    return rateMap;
+  }
+
+  // Return an unordered map.
+  std::unordered_map<std::string, double> toMap() const {
+    std::unordered_map<std::string, double> ret;
+    ret.insert(countMap.begin(), countMap.end());
+    ret.insert(rateMap.begin(), rateMap.end());
+    return ret;
+  }
+
+  CounterVisitor createCountVisitor() {
+    return {[this](folly::StringPiece key,
+                   double val,
+                   CounterVisitor::CounterType type) {
+      if (type == CounterVisitor::CounterType::COUNT) {
+        insertCount(key.str(), val);
+      } else {
+        insertRate(key.str(), val);
+      }
+    }};
+  }
+
+ private:
+  std::unordered_map<std::string, double> countMap;
+  std::unordered_map<std::string, double> rateMap;
+};
 
 // Provides an RAII wrapper around sysctl settings
 class SysctlSetting {
@@ -189,6 +332,9 @@ void removePath(const std::string& name);
 // file. throws error if the path does not exist or any other error
 bool isDir(const std::string& path);
 
+// returns true if the path exists and is a regular file
+bool isBlk(const std::string& name);
+
 // return a random path to temp directory  with the prefix
 std::string getUniqueTempDir(folly::StringPiece prefix);
 
@@ -220,6 +366,19 @@ T narrow_cast(double i) {
     return std::numeric_limits<T>::min();
   }
   return static_cast<T>(i);
+}
+
+template <typename T>
+std::pair<double, double> getMeanDeviation(std::vector<T> v) {
+  double sum = std::accumulate(v.begin(), v.end(), 0.0);
+  double mean = sum / v.size();
+
+  double accum = 0.0;
+  std::for_each(v.begin(), v.end(), [&](const T& d) {
+    accum += ((double)d - mean) * ((double)d - mean);
+  });
+
+  return std::make_pair(mean, sqrt(accum / v.size()));
 }
 
 // To force the compiler to NOT optimize away the store/load

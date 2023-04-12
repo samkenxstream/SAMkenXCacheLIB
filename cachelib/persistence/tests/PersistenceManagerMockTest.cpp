@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,8 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-// Copyright 2004-present Facebook. All Rights Reserved.
 
 #include <folly/Random.h>
 #include <gmock/gmock.h>
@@ -112,13 +110,13 @@ TEST_F(PersistenceManagerMockTest, testSaveCache) {
 
   Deserializer deserializer(bufs[1].data(), bufs[1].tail());
   auto header = deserializer.deserialize<PersistenceHeader>();
-  ASSERT_EQ(PersistenceType::Versions, header.get_type());
-  ASSERT_EQ(bufs[2].length(), header.get_length());
+  ASSERT_EQ(PersistenceType::Versions, header.type().value());
+  ASSERT_EQ(bufs[2].length(), header.length().value());
 
   Deserializer deserializerCfg(bufs[4].data(), bufs[4].tail());
   PersistCacheLibConfig cfg =
       deserializerCfg.deserialize<PersistCacheLibConfig>();
-  ASSERT_EQ(config_.getCacheName(), cfg.get_cacheName());
+  ASSERT_EQ(config_.getCacheName(), cfg.cacheName().value());
 }
 
 TEST_F(PersistenceManagerMockTest, testWriteFail) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -51,7 +51,7 @@ struct SizeVerify {};
 
 void Stats::populateGlobalCacheStats(GlobalCacheStats& ret) const {
 #ifndef SKIP_SIZE_VERIFY
-  SizeVerify<sizeof(Stats)> a = SizeVerify<16160>{};
+  SizeVerify<sizeof(Stats)> a = SizeVerify<16176>{};
   std::ignore = a;
 #endif
   ret.numCacheGets = numCacheGets.get();
@@ -59,6 +59,7 @@ void Stats::populateGlobalCacheStats(GlobalCacheStats& ret) const {
   ret.numCacheGetExpiries = numCacheGetExpiries.get();
   ret.numCacheRemoves = numCacheRemoves.get();
   ret.numCacheRemoveRamHits = numCacheRemoveRamHits.get();
+  ret.numCacheEvictions = numCacheEvictions.get();
   ret.numRamDestructorCalls = numRamDestructorCalls.get();
   ret.numDestructorExceptions = numDestructorExceptions.get();
 
@@ -137,7 +138,7 @@ void Stats::populateGlobalCacheStats(GlobalCacheStats& ret) const {
   ret.numEvictionFailureFromMoving = evictFailMove.get();
   ret.numEvictionFailureFromParentMoving = evictFailParentMove.get();
   ret.numAbortedSlabReleases = numAbortedSlabReleases.get();
-  ret.numSkippedSlabReleases = numSkippedSlabReleases.get();
+  ret.numReaperSkippedSlabs = numReaperSkippedSlabs.get();
 }
 
 } // namespace detail
@@ -316,14 +317,6 @@ uint64_t PoolStats::maxEvictionAge() const {
       ->second.getEvictionAge();
 }
 
-namespace {
-double hitRatioCalc(uint64_t ops, uint64_t miss) {
-  return miss == 0 || ops == 0 ? 100.0
-                               : 100.0 - 100.0 * static_cast<double>(miss) /
-                                             static_cast<double>(ops);
-}
-} // namespace
-
 uint64_t PoolStats::numEvictableItems() const noexcept {
   uint64_t n = 0;
   for (const auto& s : cacheStats) {
@@ -332,7 +325,44 @@ uint64_t PoolStats::numEvictableItems() const noexcept {
   return n;
 }
 
-double CCacheStats::hitRatio() const { return hitRatioCalc(get, getMiss); }
+double CCacheStats::hitRatio() const {
+  return util::hitRatioCalc(get, getMiss);
+}
+
+void RateMap::updateDelta(const std::string& name, uint64_t value) {
+  const uint64_t oldValue = internalCount_[name];
+  delta_[name] = util::safeDiff(oldValue, value);
+  internalCount_[name] = value;
+}
+
+void RateMap::updateCount(const std::string& name, uint64_t value) {
+  count_[name] = value;
+}
+
+uint64_t RateMap::getDelta(const std::string& name) const {
+  auto itr = delta_.find(name);
+  if (itr != delta_.end()) {
+    return itr->second;
+  }
+  return 0;
+}
+
+void RateMap::exportStats(
+    std::chrono::seconds aggregationInterval,
+    std::function<void(folly::StringPiece, uint64_t)> cb) {
+  for (const auto& pair : count_) {
+    cb(pair.first, pair.second);
+  }
+
+  const double multiplier = static_cast<double>(kRateInterval.count()) /
+                            static_cast<double>(aggregationInterval.count());
+  const std::string suffix =
+      "." + folly::to<std::string>(kRateInterval.count());
+  for (const auto& pair : delta_) {
+    cb(pair.first + suffix,
+       util::narrow_cast<uint64_t>(pair.second * multiplier));
+  }
+}
 
 } // namespace cachelib
 } // namespace facebook

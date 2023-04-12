@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -78,7 +78,9 @@ build_tests=
 show_help=
 many_jobs=
 verbose=
-while getopts :BSdhijtv param
+PREFIX="$PWD/opt/cachelib/"
+
+while getopts :BSdhijtvp: param
 do
   case $param in
     i) install=yes ;;
@@ -89,6 +91,7 @@ do
     v) verbose=yes ;;
     j) many_jobs=yes ;;
     t) build_tests=yes ;;
+    p) PREFIX=$OPTARG ;;
     ?) die "unknown option. See -h for help."
   esac
 done
@@ -98,14 +101,13 @@ shift $((OPTIND-1))
 test "$#" -eq 0 \
     && die "missing dependancy name to build. See -h for help"
 
-
-
 ######################################
-## Check which dependecy was requested
+## Check which dependency was requested
 ######################################
 
 external_git_clone=
 external_git_branch=
+# external_git_tag can also be used for commit hashes
 external_git_tag=
 update_submodules=
 cmake_custom_params=
@@ -159,6 +161,7 @@ case "$1" in
     REPODIR=cachelib/external/$NAME
     SRCDIR=$REPODIR
     external_git_clone=yes
+    external_git_tag="8.0.1"
     cmake_custom_params="-DBUILD_SHARED_LIBS=ON"
     if test "$build_tests" = "yes" ; then
         cmake_custom_params="$cmake_custom_params -DFMT_TEST=YES"
@@ -173,7 +176,10 @@ case "$1" in
     REPODIR=cachelib/external/$NAME
     SRCDIR=$REPODIR/build/cmake
     external_git_clone=yes
-    external_git_branch=release
+    # Previously, we pinned to release branch. v1.5.4 needed
+    # CMake >= 3.18, later reverted. While waiting for v1.5.5,
+    # pin to the fix: https://github.com/facebook/zstd/pull/3510
+    external_git_tag=8420502e
     if test "$build_tests" = "yes" ; then
         cmake_custom_params="-DZSTD_BUILD_TESTS=ON"
     else
@@ -275,7 +281,6 @@ test -d cachelib || die "expected 'cachelib' directory not found in $PWD"
 
 
 # After ensuring we are in the correct directory, set the installation prefix"
-PREFIX="$PWD/opt/cachelib/"
 CMAKE_PARAMS="$CMAKE_PARAMS -DCMAKE_INSTALL_PREFIX=$PREFIX"
 CMAKE_PREFIX_PATH="$PREFIX/lib/cmake:$PREFIX/lib64/cmake:$PREFIX/lib:$PREFIX/lib64:$PREFIX:${CMAKE_PREFIX_PATH:-}"
 export CMAKE_PREFIX_PATH

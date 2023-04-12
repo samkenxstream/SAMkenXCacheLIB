@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@
 
 #include "cachelib/common/AtomicCounter.h"
 #include "cachelib/common/BloomFilter.h"
+#include "cachelib/common/PercentileStats.h"
 #include "cachelib/navy/bighash/Bucket.h"
 #include "cachelib/navy/common/Buffer.h"
 #include "cachelib/navy/common/Device.h"
@@ -62,6 +63,7 @@ class BigHash final : public Engine {
     uint64_t cacheSize{};
     Device* device{nullptr};
 
+    ExpiredCheck checkExpired;
     DestructorCallback destructorCb;
 
     // Optional bloom filter to reduce IO
@@ -81,6 +83,9 @@ class BigHash final : public Engine {
   BigHash(const BigHash&) = delete;
   BigHash& operator=(const BigHash&) = delete;
   ~BigHash() override = default;
+
+  // Return the size of usable space
+  uint64_t getSize() const override { return bucketSize_ * numBuckets_; }
 
   // Check if the key could exist in bighash. This can be used as a pre-check
   // to optimize cache lookups to avoid calling lookups in an async IO
@@ -128,6 +133,10 @@ class BigHash final : public Engine {
 
   // return how manu times a lookup is rejected by the bloom filter
   uint64_t bfRejectCount() const { return bfRejectCount_.get(); }
+
+  // return a Buffer containing NvmItem randomly sampled in the backing store
+  std::pair<Status, std::string /* key */> getRandomAlloc(
+      Buffer& value) override;
 
  private:
   class BucketId {
@@ -184,6 +193,7 @@ class BigHash final : public Engine {
   // Serialization format version. Never 0. Versions < 10 reserved for testing.
   static constexpr uint32_t kFormatVersion = 10;
 
+  const ExpiredCheck checkExpired_{};
   const DestructorCallback destructorCb_{};
   const uint64_t bucketSize_{};
   const uint64_t cacheBaseOffset_{};
@@ -207,14 +217,17 @@ class BigHash final : public Engine {
   mutable AtomicCounter removeCount_;
   mutable AtomicCounter succRemoveCount_;
   mutable AtomicCounter evictionCount_;
+  mutable AtomicCounter evictionExpiredCount_;
   mutable AtomicCounter logicalWrittenCount_;
   mutable AtomicCounter physicalWrittenCount_;
   mutable AtomicCounter ioErrorCount_;
   mutable AtomicCounter bfFalsePositiveCount_;
   mutable AtomicCounter bfRebuildCount_;
   mutable AtomicCounter checksumErrorCount_;
-  mutable SizeDistribution sizeDist_;
   mutable AtomicCounter usedSizeBytes_;
+  // counters to quantify the expired eviction overhead (temporary)
+  // PercentileStats generates outputs in integers, so amplify by 100x
+  mutable util::PercentileStats bucketExpirationsDist_x100_;
 
   static_assert((kNumMutexes & (kNumMutexes - 1)) == 0,
                 "number of mutexes must be power of two");

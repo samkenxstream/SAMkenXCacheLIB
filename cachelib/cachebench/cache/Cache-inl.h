@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -80,6 +80,18 @@ Cache<Allocator>::Cache(const CacheConfig& config,
 
   allocatorConfig_.setCacheSize(config_.cacheSizeMB * (MB));
 
+  if (!cacheDir.empty()) {
+    allocatorConfig_.cacheDir = cacheDir;
+  }
+
+  if (config_.usePosixShm) {
+    allocatorConfig_.usePosixForShm();
+  }
+
+  if (!config_.memoryTierConfigs.empty()) {
+    allocatorConfig_.configureMemoryTiers(config_.memoryTierConfigs);
+  }
+
   auto cleanupGuard = folly::makeGuard([&] {
     if (!nvmCacheFilePath_.empty()) {
       util::removePath(nvmCacheFilePath_);
@@ -112,24 +124,45 @@ Cache<Allocator>::Cache(const CacheConfig& config,
       // already have a file, user provided it. We will also keep it around
       // after the tests.
       auto path = config_.nvmCachePaths[0];
-      if (cachelib::util::isDir(path)) {
+      bool isDir;
+      bool isBlk = false;
+      try {
+        isDir = cachelib::util::isDir(path);
+        if (!isDir) {
+          isBlk = cachelib::util::isBlk(path);
+        }
+      } catch (const std::system_error& e) {
+        XLOGF(INFO, "nvmCachePath {} does not exist", path);
+        isDir = false;
+      }
+
+      if (isDir) {
         const auto uniqueSuffix = folly::sformat("nvmcache_{}_{}", ::getpid(),
                                                  folly::Random::rand32());
         path = path + "/" + uniqueSuffix;
         util::makeDir(path);
         nvmCacheFilePath_ = path;
+        XLOGF(INFO, "Configuring NVM cache: directory {} size {} MB", path,
+              config_.nvmCacheSizeMB);
         nvmConfig.navyConfig.setSimpleFile(path + "/navy_cache",
                                            config_.nvmCacheSizeMB * MB,
                                            true /*truncateFile*/);
       } else {
-        nvmConfig.navyConfig.setSimpleFile(path, config_.nvmCacheSizeMB * MB);
+        XLOGF(INFO, "Configuring NVM cache: simple file {} size {} MB", path,
+              config_.nvmCacheSizeMB);
+        nvmConfig.navyConfig.setSimpleFile(path, config_.nvmCacheSizeMB * MB,
+                                           !isBlk /* truncateFile */);
       }
     } else if (config_.nvmCachePaths.size() > 1) {
+      XLOGF(INFO, "Configuring NVM cache: RAID-0 ({} devices) size {} MB",
+            config_.nvmCachePaths.size(), config_.nvmCacheSizeMB);
       // set up a software raid-0 across each nvm cache path.
       nvmConfig.navyConfig.setRaidFiles(config_.nvmCachePaths,
                                         config_.nvmCacheSizeMB * MB);
     } else {
       // use memory to mock NVM.
+      XLOGF(INFO, "Configuring NVM cache: memory file size {} MB",
+            config_.nvmCacheSizeMB);
       nvmConfig.navyConfig.setMemoryFile(config_.nvmCacheSizeMB * MB);
     }
     nvmConfig.navyConfig.setDeviceMetadataSize(config_.nvmCacheMetadataSizeMB *
@@ -222,8 +255,7 @@ Cache<Allocator>::Cache(const CacheConfig& config,
   allocatorConfig_.cacheName = "cachebench";
 
   bool isRecovered = false;
-  if (!cacheDir.empty()) {
-    allocatorConfig_.cacheDir = cacheDir;
+  if (!allocatorConfig_.cacheDir.empty()) {
     try {
       cache_ = std::make_unique<Allocator>(Allocator::SharedMemAttach,
                                            allocatorConfig_);
@@ -246,7 +278,7 @@ Cache<Allocator>::Cache(const CacheConfig& config,
       pools_.push_back(poolId);
     }
   } else {
-    const size_t numBytes = cache_->getCacheMemoryStats().cacheSize;
+    const size_t numBytes = cache_->getCacheMemoryStats().ramCacheSize;
     for (uint64_t i = 0; i < config_.numPools; ++i) {
       const double& ratio = config_.poolSizes[i];
       const size_t poolSize = static_cast<size_t>(numBytes * ratio);
@@ -429,6 +461,21 @@ void Cache<Allocator>::touchValue(const ReadHandle& it) const {
 }
 
 template <typename Allocator>
+bool Cache<Allocator>::couldExist(Key key) {
+  if (!consistencyCheckEnabled()) {
+    return cache_->couldExistFast(key);
+  }
+
+  // TODO: implement consistency checking.
+  // For couldExist, we need a weaker version of consistnecy check. The
+  // following are a list of conditions that wouldn't be valid with only
+  // sequence of get operations.
+  //  couldExist == true -> get == miss
+  //  couldExist == false -> couldExist == true
+  return cache_->couldExistFast(key);
+}
+
+template <typename Allocator>
 typename Cache<Allocator>::ReadHandle Cache<Allocator>::find(Key key) {
   auto findFn = [&]() {
     util::LatencyTracker tracker;
@@ -567,6 +614,18 @@ bool Cache<Allocator>::checkGet(ValueTracker::Index opId,
 }
 
 template <typename Allocator>
+double Cache<Allocator>::getNvmBytesWritten() const {
+  const auto statsMap = cache_->getNvmCacheStatsMap();
+  const auto& ratesMap = statsMap.getRates();
+  if (const auto& it = ratesMap.find("navy_device_bytes_written");
+      it != ratesMap.end()) {
+    return it->second;
+  }
+  XLOG(INFO) << "Bytes written not found";
+  return 0;
+}
+
+template <typename Allocator>
 Stats Cache<Allocator>::getStats() const {
   PoolStats aggregate = cache_->getPoolStats(pools_[0]);
   auto usageFraction =
@@ -584,7 +643,7 @@ Stats Cache<Allocator>::getStats() const {
 
   const auto cacheStats = cache_->getGlobalCacheStats();
   const auto rebalanceStats = cache_->getSlabReleaseStats();
-  const auto navyStats = cache_->getNvmCacheStatsMap();
+  const auto navyStats = cache_->getNvmCacheStatsMap().toMap();
 
   ret.numEvictions = aggregate.numEvictions();
   ret.numItems = aggregate.numItems();
@@ -594,6 +653,7 @@ Stats Cache<Allocator>::getStats() const {
 
   ret.numCacheGets = cacheStats.numCacheGets;
   ret.numCacheGetMiss = cacheStats.numCacheGetMiss;
+  ret.numCacheEvictions = cacheStats.numCacheEvictions;
   ret.numRamDestructorCalls = cacheStats.numRamDestructorCalls;
   ret.numNvmGets = cacheStats.numNvmGets;
   ret.numNvmGetMiss = cacheStats.numNvmGetMiss;
@@ -617,7 +677,7 @@ Stats Cache<Allocator>::getStats() const {
 
   ret.slabsReleased = rebalanceStats.numSlabReleaseForRebalance;
   ret.numAbortedSlabReleases = cacheStats.numAbortedSlabReleases;
-  ret.numSkippedSlabReleases = cacheStats.numSkippedSlabReleases;
+  ret.numReaperSkippedSlabs = cacheStats.numReaperSkippedSlabs;
   ret.moveAttemptsForSlabRelease = rebalanceStats.numMoveAttempts;
   ret.moveSuccessesForSlabRelease = rebalanceStats.numMoveSuccesses;
   ret.evictionAttemptsForSlabRelease = rebalanceStats.numEvictionAttempts;
@@ -635,7 +695,7 @@ Stats Cache<Allocator>::getStats() const {
   // Populate counters.
   // TODO: Populate more counters that are interesting to cachebench.
   if (config_.printNvmCounters) {
-    ret.nvmCounters = cache_->getNvmCacheStatsMap();
+    ret.nvmCounters = cache_->getNvmCacheStatsMap().toMap();
   }
 
   // nvm stats from navy
@@ -692,9 +752,10 @@ Stats Cache<Allocator>::getStats() const {
 
 template <typename Allocator>
 bool Cache<Allocator>::hasNvmCacheWarmedUp() const {
-  const auto& nvmStats = cache_->getNvmCacheStatsMap();
-  const auto it = nvmStats.find("navy_bc_evicted");
-  if (it == nvmStats.end()) {
+  const auto nvmStats = cache_->getNvmCacheStatsMap();
+  const auto& ratesMap = nvmStats.getRates();
+  const auto it = ratesMap.find("navy_bc_evictions");
+  if (it == ratesMap.end()) {
     return false;
   }
   return it->second > 0;
@@ -754,8 +815,17 @@ void Cache<Allocator>::setUint64ToItem(WriteHandle& handle,
 template <typename Allocator>
 void Cache<Allocator>::setStringItem(WriteHandle& handle,
                                      const std::string& str) {
-  auto ptr = reinterpret_cast<uint8_t*>(getMemory(handle));
-  std::memcpy(ptr, str.data(), std::min<size_t>(str.size(), getSize(handle)));
+  auto dataSize = getSize(handle);
+  if (dataSize < 1)
+    return;
+
+  auto ptr = reinterpret_cast<char*>(getMemory(handle));
+  std::strncpy(ptr, str.c_str(), dataSize);
+
+  // Make sure the copied string ends with null char
+  if (str.size() + 1 > dataSize) {
+    ptr[dataSize - 1] = '\0';
+  }
 }
 
 template <typename Allocator>

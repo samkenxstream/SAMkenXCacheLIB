@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -76,7 +76,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     const size_t nItems = 10;
 
     auto checkStats = [&](auto& allocator, auto& mmConfig2) {
-      const size_t numBytes = allocator->getCacheMemoryStats().cacheSize;
+      const size_t numBytes = allocator->getCacheMemoryStats().ramCacheSize;
       auto poolId = allocator->addPool("default", numBytes, {} /* allocSizes */,
                                        mmConfig2);
       for (unsigned int i = 0; i < nItems; ++i) {
@@ -140,14 +140,12 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     mmConfig.lruRefreshTime = 0;
 
     typename AllocatorT::Config configA;
-    configA.disableCacheEviction();
     configA.setCacheSize(numSlabs * Slab::kSize);
     // Disable slab rebalancing
     configA.enablePoolRebalancing(nullptr, std::chrono::seconds{0});
     auto a = std::make_unique<AllocatorT>(configA);
 
     typename AllocatorT::Config configB;
-    configB.disableCacheEviction();
     configB.setCacheSize(numSlabs * Slab::kSize);
     // Disable slab rebalancing
     configB.enablePoolRebalancing(nullptr, std::chrono::seconds{0});
@@ -179,7 +177,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     // create an allocator worth 100 slabs.
     config.setCacheSize(100 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize1 = numBytes / 3;
     const auto poolSize2 = numBytes - poolSize1;
     auto poolId1 = alloc.addPool("one", poolSize1);
@@ -279,8 +277,8 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     AllocatorT alloc(config);
 
     std::set<uint32_t> allocSizes{100, 1000, 2000, 5000};
-    auto pid = alloc.addPool("default", alloc.getCacheMemoryStats().cacheSize,
-                             allocSizes);
+    auto pid = alloc.addPool(
+        "default", alloc.getCacheMemoryStats().ramCacheSize, allocSizes);
 
     const uint32_t valSizeStep = 25;
     for (uint32_t i = 1; i <= 100; ++i) {
@@ -315,7 +313,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     std::vector<std::string> keys;
     {
       AllocatorT alloc(AllocatorT::SharedMemNew, config);
-      const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+      const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
       poolId = alloc.addPool("foobar", numBytes);
       sizes = this->getValidAllocSizes(alloc, poolId, nSlabs, keyLen);
       this->fillUpPoolUntilEvictions(alloc, poolId, sizes, keyLen);
@@ -435,7 +433,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
 
     // create an allocator worth 50 slabs.
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize = numBytes / 2;
     auto poolId = alloc.addPool("one", poolSize, {} /* allocSizes */, mmConfig);
 
@@ -498,8 +496,8 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
       ASSERT_NE(handle, nullptr);
 
       ASSERT_EQ(alloc.find(key), nullptr);
-      ASSERT_TRUE(alloc.insert(std::move(handle)));
       memset(handle->getMemory(), magicVal2, handle->getSize());
+      ASSERT_TRUE(alloc.insert(handle));
     }
 
     evictedKeys.clear();
@@ -547,7 +545,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     typename AllocatorT::Config config;
     config.setCacheSize(100 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("default", numBytes);
 
     // try to allocate as much as possible and ensure that even when we run more
@@ -574,7 +572,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize(10 * Slab::kSize);
     config.configureChainedItems();
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("default", numBytes);
 
     // try to allocate as much as possible and ensure that even when we run more
@@ -619,7 +617,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize(10 * Slab::kSize);
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("default", numBytes);
 
     const std::string key = "key";
@@ -644,7 +642,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     typename AllocatorT::Config config;
     config.setCacheSize(100 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
 
     auto poolSize3 = 2 * Slab::kSize;
     auto poolSize1 = numBytes / 3;
@@ -702,7 +700,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize(10 * Slab::kSize);
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("default", numBytes);
 
     {
@@ -715,35 +713,29 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
       auto handle = alloc.find("key");
       ASSERT_NE(handle, nullptr);
       ASSERT_TRUE(isConst(handle->getMemory()));
-      ASSERT_EQ(handle.isWriteHandle(), false);
 
       // read handle clone
       auto handle2 = handle.clone();
       ASSERT_TRUE(isConst(handle2->getMemory()));
-      ASSERT_EQ(handle2.isWriteHandle(), false);
 
       // upgrade a read handle to a write handle
       auto handle3 = std::move(handle).toWriteHandle();
       ASSERT_FALSE(isConst(handle3->getMemory()));
-      ASSERT_EQ(handle3.isWriteHandle(), true);
     }
 
     {
       auto handle = alloc.findToWrite("key");
       ASSERT_NE(handle, nullptr);
       ASSERT_FALSE(isConst(handle->getMemory()));
-      ASSERT_EQ(handle.isWriteHandle(), true);
 
       // write handle clone
       auto handle2 = handle.clone();
       ASSERT_FALSE(isConst(handle2->getMemory()));
-      ASSERT_EQ(handle2.isWriteHandle(), true);
 
       // downgrade a write handle to a read handle
       ReadHandle handle3 = handle.clone();
       ASSERT_NE(handle3, nullptr);
       ASSERT_TRUE(isConst(handle3->getMemory()));
-      ASSERT_EQ(handle3.isWriteHandle(), false);
     }
 
     {
@@ -754,7 +746,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
       // This is like doing a "clone" and setting it into wait context
       waitContext->set(alloc.find("key"));
       auto handle2 = std::move(handle).toWriteHandle();
-      ASSERT_EQ(handle2.isWriteHandle(), true);
+      ASSERT_FALSE(isConst(handle2->getMemory()));
     }
   }
 
@@ -775,7 +767,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize(100 * Slab::kSize);
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("foobar", numBytes);
 
     const unsigned int nSizes = 10;
@@ -825,7 +817,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize(100 * Slab::kSize);
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("foobar", numBytes);
 
     const unsigned int nSizes = 10;
@@ -894,7 +886,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize(100 * Slab::kSize);
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("foobar", numBytes);
 
     const unsigned int nSizes = 10;
@@ -953,7 +945,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize(100 * Slab::kSize);
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize / 2;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize / 2;
     alloc.addPool("fake", numBytes);
     poolId = alloc.addPool("foobar", numBytes);
 
@@ -1021,7 +1013,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.enableMovingOnSlabRelease(moveCb, {}, 10);
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     uint32_t size1 = 14 * 1024;
     uint32_t size2 = 16 * 1024;
     std::set<uint32_t> sizes = {size1, size2};
@@ -1070,7 +1062,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize(3 * Slab::kSize);
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     uint32_t size1 = 14 * 1024;
     uint32_t size2 = 16 * 1024;
     std::set<uint32_t> sizes = {size1, size2};
@@ -1117,7 +1109,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize(100 * Slab::kSize);
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId =
         alloc.addPool("foobar", numBytes, {} /* allocSizes */, mmConfig);
 
@@ -1251,7 +1243,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize(10 * Slab::kSize);
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("foobar", numBytes);
 
     const unsigned int nSizes = 5;
@@ -1274,7 +1266,8 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     std::vector<typename AllocatorT::Key> keys;
     {
       AllocatorT alloc(AllocatorT::SharedMemNew, config);
-      auto poolId = alloc.addPool("foo", alloc.getCacheMemoryStats().cacheSize);
+      auto poolId =
+          alloc.addPool("foo", alloc.getCacheMemoryStats().ramCacheSize);
       unsigned int ttlSecs = 1;
       util::allocateAccessible(alloc, poolId, "hello", 1000, ttlSecs);
       while (alloc.getReaperStats().numTraversals < 5) {
@@ -1409,7 +1402,8 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
 
     // Create a new cache allocator and save it properly
     AllocatorT alloc(AllocatorT::SharedMemNew, config);
-    auto pid = alloc.addPool("foobar", alloc.getCacheMemoryStats().cacheSize);
+    auto pid =
+        alloc.addPool("foobar", alloc.getCacheMemoryStats().ramCacheSize);
 
     auto handle = util::allocateAccessible(alloc, pid, "key", 10);
     ASSERT_NE(nullptr, handle);
@@ -1584,7 +1578,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     std::vector<std::string> keys;
     {
       AllocatorT alloc(AllocatorT::SharedMemNew, config);
-      const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+      const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
       poolId = alloc.addPool("foobar", numBytes);
       sizes = this->getValidAllocSizes(alloc, poolId, nSlabs, keyLen);
       this->fillUpPoolUntilEvictions(alloc, poolId, sizes, keyLen);
@@ -1616,7 +1610,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config2.enableCachePersistence(this->cacheDir_);
     {
       AllocatorT alloc(AllocatorT::SharedMemNew, config2);
-      const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+      const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
       poolId = alloc.addPool("foobar", numBytes);
 
       sizes = this->getValidAllocSizes(alloc, poolId, nSizes, keyLen);
@@ -1647,7 +1641,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     // start allocator
     {
       AllocatorT alloc(AllocatorT::SharedMemNew, config);
-      const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+      const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
       {
         typename AllocatorT::MMConfig mmConfig;
         mmConfig.lruRefreshRatio = ratio;
@@ -1687,7 +1681,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     // start allocator
     {
       AllocatorT alloc(AllocatorT::SharedMemNew, config);
-      const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+      const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
       {
         typename AllocatorT::MMConfig mmConfig;
         auto pid = alloc.addPool("pool", numBytes, allocSizes, mmConfig);
@@ -1739,7 +1733,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
 
       std::vector<std::string> keys;
       const unsigned int keyLen = 100;
-      const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+      const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
       auto poolId = alloc.addPool("foobar", numBytes);
       auto sizes = this->getValidAllocSizes(alloc, poolId, nSlabs, keyLen);
       this->fillUpPoolUntilEvictions(alloc, poolId, sizes, keyLen);
@@ -1784,7 +1778,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setRemoveCallback(removeCb);
     config.setCacheSize(10 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId =
         alloc.addPool("foobar", numBytes, {} /* allocSizes */, lruConfig);
 
@@ -1862,7 +1856,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize(10 * Slab::kSize);
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("foobar", numBytes);
 
     // for sake of simplicity, we want to have only two allocation classes.
@@ -1928,7 +1922,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     typename AllocatorT::Config config;
     config.setCacheSize(10 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("foobar", numBytes);
 
     // for sake of simplicity, we want to have only two allocation classes.
@@ -1978,7 +1972,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     typename AllocatorT::Config config;
     config.setCacheSize(10 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("foobar", numBytes);
 
     // for sake of simplicity, we want to have only two allocation classes.
@@ -2041,7 +2035,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize(50 * Slab::kSize);
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("foobar", numBytes);
 
     // for sake of simplicity, we want to have only two allocation classes. this
@@ -2079,7 +2073,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     typename AllocatorT::Config config;
     config.setCacheSize(10 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     std::set<uint32_t> allocSizes{10000};
     auto poolId = alloc.addPool("foobar", numBytes, allocSizes);
 
@@ -2111,7 +2105,6 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
       const std::string key = keyPrefix + folly::to<std::string>(i);
       auto itemHandle = alloc.find(key);
       auto itemIOBuf = alloc.convertToIOBuf(std::move(itemHandle));
-      ASSERT_EQ(nullptr, itemHandle);
       ASSERT_EQ(i, itemIOBuf.data()[0]);
 
       const unsigned int nSizes = 2;
@@ -2125,10 +2118,9 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
       // This one key should still be here
       auto itemHandle2 = alloc.find(key);
       auto itemIOBuf2 = alloc.convertToIOBuf(std::move(itemHandle2));
-      ASSERT_EQ(nullptr, itemHandle2);
 
       ASSERT_EQ(i, itemIOBuf.data()[0]);
-      ASSERT_EQ(itemIOBuf.data()[0], itemIOBuf2.data()[0]);
+      ASSERT_EQ(itemIOBuf.data(), itemIOBuf2.data());
     }
   }
 
@@ -2144,7 +2136,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setRemoveCallback(removeCb);
     config.setRefcountThresholdForConvertingToIOBuf(0);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     std::set<uint32_t> allocSizes{10000};
     auto poolId = alloc.addPool("foobar", numBytes, allocSizes);
 
@@ -2204,7 +2196,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize(10 * Slab::kSize);
     config.setRemoveCallback(removeCb);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     std::set<uint32_t> allocSizes{10000};
     auto poolId = alloc.addPool("foobar", numBytes, allocSizes);
 
@@ -2274,7 +2266,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize(10 * Slab::kSize);
     config.setRemoveCallback(removeCb);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     std::set<uint32_t> allocSizes{10000};
     auto poolId = alloc.addPool("foobar", numBytes, allocSizes);
 
@@ -2318,7 +2310,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.configureChainedItems();
     config.setCacheSize(100 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("foobar", numBytes);
 
     char baseChar = 'A';
@@ -2382,7 +2374,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize(10 * Slab::kSize);
     config.setRemoveCallback(removeCb);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     std::set<uint32_t> allocSizes{10000};
     auto poolId = alloc.addPool("foobar", numBytes, allocSizes);
 
@@ -2431,7 +2423,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize(10 * Slab::kSize);
     config.setRemoveCallback(removeCb);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     std::set<uint32_t> allocSizes{10000};
     auto poolId = alloc.addPool("foobar", numBytes, allocSizes);
 
@@ -2487,7 +2479,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize(10 * Slab::kSize);
     config.setRemoveCallback(removeCb);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     std::set<uint32_t> allocSizes{10000};
     auto poolId = alloc.addPool("foobar", numBytes, allocSizes);
 
@@ -2566,7 +2558,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.configureChainedItems();
     config.setCacheSize(10 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     std::set<uint32_t> allocSizes{100, 1000, 10000};
     auto poolId = alloc.addPool("foobar", numBytes, allocSizes);
 
@@ -2626,7 +2618,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     typename AllocatorT::Config config{};
     config.setCacheSize(100 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("foobar", numBytes);
 
     const std::string keyPrefix = "key";
@@ -2719,7 +2711,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     typename AllocatorT::Config config{};
     config.setCacheSize(100 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("foobar", numBytes);
 
     // Create a item in ram cache to fulfill the "async item"
@@ -2775,7 +2767,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     typename AllocatorT::Config config{};
     config.setCacheSize(100 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("foobar", numBytes);
 
     const std::string key = "key";
@@ -2852,7 +2844,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     typename AllocatorT::Config config{};
     config.setCacheSize(100 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("foobar", numBytes);
 
     const std::string keyPrefix = "key";
@@ -2966,7 +2958,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize(100 * Slab::kSize);
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("foobar", numBytes);
 
     const unsigned int nSizes = 20;
@@ -3079,7 +3071,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize(10 * Slab::kSize);
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("foobar", numBytes);
 
     // fill up the pool with items of the same size
@@ -3144,7 +3136,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setRemoveCallback(removeCb);
     config.setCacheSize(10 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("foobar", numBytes);
 
     const unsigned int keyLen = 100;
@@ -3190,7 +3182,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setRemoveCallback(removeCb);
     config.setCacheSize(10 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("foobar", numBytes);
 
     const unsigned int keyLen = 100;
@@ -3229,7 +3221,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     typename AllocatorT::Config config{};
     config.setCacheSize(10 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("foobar", numBytes);
 
     const unsigned int keyLen = 100;
@@ -3287,7 +3279,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     {
       std::vector<typename AllocatorT::ReadHandle> handles;
       AllocatorT alloc(AllocatorT::SharedMemNew, config);
-      const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+      const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
       const std::set<uint32_t> acSizes = {512 * 1024, 1024 * 1024};
       poolId = alloc.addPool("foobar", numBytes, acSizes);
       std::vector<uint32_t> sizes = {450 * 1024};
@@ -3351,11 +3343,11 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     typename AllocatorT::Config config{};
     config.setCacheSize(10 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("foobar", numBytes);
 
     // no valid item in cache yet, so we shouldn't get anything
-    ASSERT_EQ(nullptr, alloc.getSampleItem());
+    ASSERT_FALSE(alloc.getSampleItem().isValid());
 
     // fill up the pool, so any random memory we grab is a valid item
     const unsigned int nSizes = 10;
@@ -3363,8 +3355,14 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     const auto sizes = this->getValidAllocSizes(alloc, poolId, nSizes, keyLen);
     this->fillUpPoolUntilEvictions(alloc, poolId, sizes, keyLen);
 
-    auto handle = alloc.getSampleItem();
-    ASSERT_NE(nullptr, handle);
+    ReadHandle handle;
+    {
+      auto sampleItem = alloc.getSampleItem();
+      ASSERT_TRUE(sampleItem.isValid());
+      handle = alloc.find(sampleItem->getKey());
+      ASSERT_NE(nullptr, handle);
+      ASSERT_EQ(2, handle->getRefCount());
+    }
     ASSERT_EQ(1, handle->getRefCount());
   }
 
@@ -3415,7 +3413,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
   }
 
   void testInsertAndFind(AllocatorT& alloc) {
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const size_t kAllocSize = 1024, kItemSize = 512;
     auto poolId = alloc.addPool("default", numBytes, {kAllocSize});
     const size_t itemsPerSlab = Slab::kSize / kAllocSize;
@@ -3446,7 +3444,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
         });
     config.setCacheSize((numSlabs + 1) * Slab::kSize);
     AllocatorT allocator(config);
-    const size_t numBytes = allocator.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = allocator.getCacheMemoryStats().ramCacheSize;
     const size_t kAllocSize = Slab::kSize, kItemSize = 64;
     auto poolId = allocator.addPool("default", numBytes, {kAllocSize});
 
@@ -3528,7 +3526,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
                                      -1 /* movingAttemptsLimit */);
     config.setCacheSize((numSlabs + 1) * Slab::kSize);
     AllocatorT allocator(config);
-    const size_t numBytes = allocator.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = allocator.getCacheMemoryStats().ramCacheSize;
     const size_t kAllocSize = 128, kItemSize = 64;
     auto poolId = allocator.addPool("default", numBytes, {kAllocSize});
     const size_t itemsPerSlab = Slab::kSize / kAllocSize;
@@ -3663,54 +3661,6 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     testMoveItemHelper(testEviction, std::move(releaseSlabFunc));
   }
 
-  void testAllocateWithoutEviction() {
-    const int numSlabs = 2;
-
-    // Request numSlabs + 1 slabs so that we get numSlabs usable slabs
-    typename AllocatorT::Config config;
-    config.disableCacheEviction();
-    config.setCacheSize((numSlabs + 1) * Slab::kSize);
-    AllocatorT allocator(config);
-
-    const size_t numBytes = allocator.getCacheMemoryStats().cacheSize;
-    const size_t kAllocSize = 128, kItemSize = 100;
-    auto poolId = allocator.addPool("default", numBytes);
-    const size_t itemsPerSlab = Slab::kSize / kAllocSize;
-    ASSERT_GT(itemsPerSlab, 0);
-
-    // allocate until we're out of memory
-    // and then free some items to make sure we can allocate more
-
-    std::vector<std::string> items;
-    for (unsigned int i = 0;; ++i) {
-      auto handle = util::allocateAccessible(
-          allocator, poolId, folly::to<std::string>(i), kItemSize);
-      if (handle == nullptr) {
-        break;
-      }
-      items.push_back(handle->getKey().str());
-    }
-
-    // Now if we free some items, we'll be able to allocate more
-    for (unsigned int i = 0; i < 10; ++i) {
-      const auto key = items.back();
-      items.pop_back();
-      ASSERT_EQ(AllocatorT::RemoveRes::kSuccess, allocator.remove(key));
-    }
-
-    // We should be able to allocate 10 more items
-    for (unsigned int i = 0; i < 10; ++i) {
-      auto handle = util::allocateAccessible(
-          allocator, poolId, std::string{"new_"} + folly::to<std::string>(i),
-          kItemSize);
-      ASSERT_NE(nullptr, handle);
-    }
-    ASSERT_EQ(nullptr,
-              util::allocateAccessible(allocator, poolId,
-                                       std::string{"this_key_will_fail"},
-                                       kItemSize));
-  }
-
   void testAllocateWithTTL() {
     const int numSlabs = 2;
 
@@ -3719,7 +3669,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize((numSlabs + 1) * Slab::kSize);
     AllocatorT allocator(config);
 
-    const size_t numBytes = allocator.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = allocator.getCacheMemoryStats().ramCacheSize;
     const size_t kAllocSize = 128, kItemSize = 100;
     auto poolId = allocator.addPool("default", numBytes);
     const size_t itemsPerSlab = Slab::kSize / kAllocSize;
@@ -3774,7 +3724,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.reaperInterval = std::chrono::milliseconds(0);
     AllocatorT allocator(config);
 
-    const size_t numBytes = allocator.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = allocator.getCacheMemoryStats().ramCacheSize;
     const size_t kAllocSize = 128, kItemSize = 100;
     auto poolId = allocator.addPool("default", numBytes);
     const size_t itemsPerSlab = Slab::kSize / kAllocSize;
@@ -3841,7 +3791,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
 
     AllocatorT allocator(config);
 
-    const size_t numBytes = allocator.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = allocator.getCacheMemoryStats().ramCacheSize;
     const size_t kItemSize = 100;
     auto poolId = allocator.addPool("default", numBytes);
 
@@ -3931,7 +3881,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
 
     AllocatorT allocator(config);
 
-    const size_t numBytes = allocator.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = allocator.getCacheMemoryStats().ramCacheSize;
     const size_t kItemSize = 100;
     auto poolId = allocator.addPool("default", numBytes);
 
@@ -3962,13 +3912,14 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
 
     typename AllocatorT::Config config;
     // start with no reaper
-    config.reaperInterval = std::chrono::seconds(0);
+    auto reaperInterval = std::chrono::milliseconds(0);
+    config.reaperInterval = reaperInterval;
     config.enableCachePersistence(this->cacheDir_,
                                   ((void*)(uintptr_t)0x7e0000000000));
     config.setCacheSize((numSlabs + 1) * Slab::kSize);
 
     AllocatorT allocator(AllocatorT::SharedMemNew, config);
-    const size_t numBytes = allocator.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = allocator.getCacheMemoryStats().ramCacheSize;
     auto poolId =
         allocator.addPool("default", numBytes, std::set<uint32_t>{64, 1000});
 
@@ -4008,9 +3959,19 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     // Sleep for 1 second to ensure large item to have expired
     std::this_thread::sleep_for(std::chrono::seconds{2});
 
+    auto params = allocator.serializeConfigParams();
+    EXPECT_TRUE(
+        !params["reaperInterval"].compare(util::toString(reaperInterval)));
     // Start reaper, we should not crash
-    allocator.startNewReaper(std::chrono::milliseconds{1},
+    reaperInterval = std::chrono::milliseconds{1};
+    allocator.startNewReaper(reaperInterval,
                              util::Throttler::Config::makeNoThrottleConfig());
+
+    params = allocator.serializeConfigParams();
+
+    // Check if relevent configuration is changed
+    EXPECT_TRUE(
+        !params["reaperInterval"].compare(util::toString(reaperInterval)));
 
     // Loop until we have reaped at least one iteration
     while (true) {
@@ -4035,7 +3996,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize(numSlabs * Slab::kSize);
 
     AllocatorT allocator(config);
-    const size_t numBytes = allocator.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = allocator.getCacheMemoryStats().ramCacheSize;
     auto poolId =
         allocator.addPool("default", numBytes, std::set<uint32_t>{1000, 10000});
     // Allocate 1 slab to the allocClass
@@ -4057,8 +4018,8 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     // We should have at least one slab skipped since traverseAndExpireItems
     // call will make the associated allocClass hold a lock for 2 ms. The
     // reaper should be ran at least once within the 2 ms. If it ran more
-    // than once numSkippedSlabReleases could be larger than 1.
-    ASSERT_GE(allocator.getGlobalCacheStats().numSkippedSlabReleases, 1);
+    // than once numReaperSkippedSlabs could be larger than 1.
+    ASSERT_GE(allocator.getGlobalCacheStats().numReaperSkippedSlabs, 1);
   }
 
   void testReaperSkippingSlabTraversalWhileSlabReleasing() {
@@ -4072,7 +4033,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize(numSlabs * Slab::kSize);
 
     AllocatorT allocator(config);
-    const size_t numBytes = allocator.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = allocator.getCacheMemoryStats().ramCacheSize;
     // We only need a single alloc class for this test
     auto poolId =
         allocator.addPool("default", numBytes, std::set<uint32_t>{64});
@@ -4093,7 +4054,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     it.reset();
     t1.join();
     // Verify we have at least skipped one slab
-    ASSERT_GE(allocator.getGlobalCacheStats().numSkippedSlabReleases, 1);
+    ASSERT_GE(allocator.getGlobalCacheStats().numReaperSkippedSlabs, 1);
   }
 
   void testAllocSizes() {
@@ -4102,7 +4063,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     typename AllocatorT::Config config;
     config.setCacheSize(numSlabs * Slab::kSize);
     AllocatorT allocator(config);
-    const size_t numBytes = allocator.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = allocator.getCacheMemoryStats().ramCacheSize;
     std::set<uint32_t> badAllocSizes = {48, 64, 128, 256, 512};
     std::set<uint32_t> goodAllocSizes = {64, 128, 256, 512};
     ASSERT_THROW(allocator.addPool("default", numBytes, badAllocSizes),
@@ -4136,7 +4097,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setCacheSize((numSlabs + 1) * Slab::kSize);
     AllocatorT allocator(config);
 
-    const size_t numBytes = allocator.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = allocator.getCacheMemoryStats().ramCacheSize;
     const size_t small = 128;
     const size_t big = 1024;
     auto pid = allocator.addPool("default", numBytes, {small + 128, big + 128});
@@ -4188,7 +4149,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.configureChainedItems();
     config.setCacheSize(10 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize = numBytes;
 
     const auto pid = alloc.addPool("one", poolSize);
@@ -4245,7 +4206,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setRemoveCallback(removeCb);
     config.setCacheSize(10 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize = numBytes;
 
     const auto pid = alloc.addPool("one", poolSize);
@@ -4354,7 +4315,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.configureChainedItems();
     config.setRemoveCallback(removeCb);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize = numBytes;
 
     const auto pid = alloc.addPool("one", poolSize);
@@ -4437,7 +4398,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.enablePoolRebalancing(nullptr, std::chrono::seconds{0});
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize = numBytes;
 
     const auto pid = alloc.addPool("one", poolSize);
@@ -4449,14 +4410,12 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     // and thus it cannot be evicted, so none of its chained allocations
     // can be evicted either
     auto itemHandle = util::allocateAccessible(alloc, pid, "hello1", size);
-    int allocations = 1;
-    for (unsigned int i = 0;; ++i) {
+    while (true) {
       auto chainedItemHandle = alloc.allocateChainedItem(itemHandle, size);
-      alloc.addChainedItem(itemHandle, std::move(chainedItemHandle));
       if (chainedItemHandle == nullptr) {
         break;
       }
-      ++allocations;
+      alloc.addChainedItem(itemHandle, std::move(chainedItemHandle));
     }
 
     // Dropping the item handle. The item is still in cache since it's
@@ -4499,7 +4458,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setRemoveCallback(removeCb);
     config.setCacheSize(20 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize = numBytes;
 
     const std::set<uint32_t> allocSizes = {150, 250, 550, 1050, 2050, 5050};
@@ -4570,7 +4529,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.configureChainedItems();
     config.setCacheSize(100 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize = numBytes;
 
     const auto pid = alloc.addPool("one", poolSize);
@@ -4678,7 +4637,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
 
     {
       AllocatorT alloc(AllocatorT::SharedMemNew, config);
-      const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+      const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
 
       // add 2 pools and fill them up.
       poolId1 = alloc.addPool("1", numBytes / 2);
@@ -4764,7 +4723,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
 
     AllocatorT alloc(config);
 
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize = numBytes;
 
     const std::set<uint32_t> allocSizes = {100, 1000};
@@ -4851,7 +4810,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     });
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize = numBytes;
 
     const std::set<uint32_t> allocSizes = {150, 250, 550, 1050, 2050, 5050};
@@ -4997,7 +4956,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
         [](typename Item::Key key) { return TestSyncObj::genSync(key); });
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize = numBytes;
     const auto pid = alloc.addPool("one", poolSize);
 
@@ -5053,10 +5012,12 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
                       oldItem.getSize());
           ++numMoves;
         },
-        [&m](typename Item::Key) { return std::make_unique<TestSyncObj>(m); });
+        [&m](typename Item::Key) { return std::make_unique<TestSyncObj>(m); },
+        // Attempt a lot of moving so we're more lilely to succeed
+        1'000'000 /* movingAttempts */);
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize = numBytes;
 
     const std::set<uint32_t> allocSizes = {150, 250, 550, 1050, 2050, 5050};
@@ -5139,7 +5100,6 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     allocateItem3.wait();
 
     // Verify items have only been moved but not evicted
-    ASSERT_LT(0, numMoves);
     ASSERT_EQ(0, numRemovedKeys);
 
     auto lookupFn = [&](std::string keyPrefix) {
@@ -5239,7 +5199,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
         numMovingAttempts);
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize = numBytes;
 
     const std::set<uint32_t> allocSizes = {250, 2050};
@@ -5311,7 +5271,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setRemoveCallback(removeCb);
     config.setCacheSize(10 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize = numBytes;
 
     const auto pid = alloc.addPool("one", poolSize);
@@ -5385,7 +5345,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     // Disable slab rebalancing
     config.enablePoolRebalancing(nullptr, std::chrono::seconds{0});
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize = numBytes;
 
     const auto pid = alloc.addPool("one", poolSize);
@@ -5427,7 +5387,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     // Original lru allocator
     {
       AllocatorT alloc(AllocatorT::SharedMemNew, config);
-      const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+      const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
       poolId = alloc.addPool("foobar", numBytes);
 
       // Allocate chained items
@@ -5468,8 +5428,9 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     const std::set<uint32_t> allocSizes{100};
     typename AllocatorT::MMConfig mmConfig;
     mmConfig.lruRefreshTime = 0;
-    const auto poolId = alloc.addPool(
-        "default", alloc.getCacheMemoryStats().cacheSize, allocSizes, mmConfig);
+    const auto poolId =
+        alloc.addPool("default", alloc.getCacheMemoryStats().ramCacheSize,
+                      allocSizes, mmConfig);
 
     {
       const auto stats = alloc.getPoolEvictionAgeStats(poolId, 0);
@@ -5496,7 +5457,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.configureChainedItems();
     AllocatorT alloc(config);
     const auto poolId =
-        alloc.addPool("default", alloc.getCacheMemoryStats().cacheSize);
+        alloc.addPool("default", alloc.getCacheMemoryStats().ramCacheSize);
 
     // Make sure replaceInMMContainer correctly handles items in the same or
     // different mm containers
@@ -5537,7 +5498,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.configureChainedItems();
     AllocatorT alloc(config);
     const auto poolId =
-        alloc.addPool("default", alloc.getCacheMemoryStats().cacheSize);
+        alloc.addPool("default", alloc.getCacheMemoryStats().ramCacheSize);
 
     // Normal item
     {
@@ -5596,7 +5557,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.configureChainedItems();
     config.setCacheSize(10 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize = numBytes;
 
     const auto pid = alloc.addPool("one", poolSize);
@@ -5633,7 +5594,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.configureChainedItems();
     config.setCacheSize(10 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize = numBytes;
 
     const auto pid = alloc.addPool("one", poolSize);
@@ -5663,7 +5624,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setRemoveCallback(removeCb);
     AllocatorT alloc(config);
 
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize = numBytes;
 
     const auto pid = alloc.addPool("one", poolSize);
@@ -5701,7 +5662,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setRemoveCallback(removeCb);
     AllocatorT alloc(config);
 
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize = numBytes;
 
     const auto pid = alloc.addPool("one", poolSize);
@@ -5717,7 +5678,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     typename AllocatorT::Config config;
     config.setCacheSize(10 * Slab::kSize);
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize = numBytes;
 
     const auto pid = alloc.addPool("one", poolSize);
@@ -5749,7 +5710,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
       return itemString.find(key) != std::string::npos;
     };
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize = numBytes / 2;
     std::string key1 = "key1-some-random-string-here";
     auto poolId = alloc.addPool("one", poolSize, {} /* allocSizes */, mmConfig);
@@ -5801,7 +5762,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
       return itemString.find(key) != std::string::npos;
     };
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize = numBytes / 2;
     std::string key1 = "key1-some-random-string-here";
     std::string key3 = "key3-some-random-string-here";
@@ -5926,7 +5887,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     const auto smallSize = 1024 * 1024;
     const auto largeSize = 3 * 1024 * 1024;
     const auto poolId =
-        alloc.addPool("default", alloc.getCacheMemoryStats().cacheSize,
+        alloc.addPool("default", alloc.getCacheMemoryStats().ramCacheSize,
                       {smallSize + 100, largeSize + 100});
 
     // Allocate until the smaller objects fill up the cache
@@ -5966,7 +5927,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     const auto smallSize = 1024 * 1024;
     const auto largeSize = 3 * 1024 * 1024;
     const auto poolId =
-        alloc.addPool("default", alloc.getCacheMemoryStats().cacheSize,
+        alloc.addPool("default", alloc.getCacheMemoryStats().ramCacheSize,
                       {smallSize + 100, largeSize + 100});
     // Allocate until the smaller objects fill up the cache
     // keeps handles in the vector to avoid eviction
@@ -6017,7 +5978,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     std::vector<std::string> keys;
     {
       AllocatorT alloc(AllocatorT::SharedMemNew, config);
-      const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+      const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
       poolId = alloc.addPool("foobar", numBytes);
       sizes = this->getValidAllocSizes(alloc, poolId, nSlabs, keyLen);
       this->fillUpPoolUntilEvictions(alloc, poolId, sizes, keyLen);
@@ -6069,7 +6030,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     std::vector<std::string> keys;
     {
       AllocatorT alloc(AllocatorT::SharedMemNew, config);
-      const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+      const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
       poolId = alloc.addPool("foobar", numBytes);
       sizes = this->getValidAllocSizes(alloc, poolId, nSlabsOriginal, keyLen);
       this->fillUpPoolUntilEvictions(alloc, poolId, sizes, keyLen);
@@ -6111,7 +6072,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
           }
         });
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("default", numBytes);
     { auto handle = alloc.allocate(poolId, "test", 100); }
     EXPECT_EQ(false, isRemoveCbTriggered);
@@ -6131,7 +6092,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
         .setDelayCacheWorkersStart();
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("default", numBytes);
 
     {
@@ -6160,7 +6121,7 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     config.setSlabReleaseStuckThreashold(
         std::chrono::seconds(releaseStuckThreshold));
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("foobar", numBytes);
 
     // 3/4 * kSize to make sure items are allocated in different slabs
@@ -6213,6 +6174,115 @@ class BaseAllocatorTest : public AllocatorTest<AllocatorT> {
     handle2.reset();
     r2.wait();
     ASSERT_EQ(0, alloc.getSlabReleaseStats().numSlabReleaseStuck);
+  }
+
+  void testRateMap() {
+    RateMap counters;
+    counters.updateCount("stat1", 11);
+    counters.updateDelta("stat2", 22);
+    counters.updateDelta("stat2", 44);
+    EXPECT_EQ(22, counters.getDelta("stat2"));
+
+    int seen = 0;
+    counters.exportStats(
+        std::chrono::seconds{60},
+        [&seen](folly::StringPiece name, uint64_t value) mutable {
+          if (name == "stat1") {
+            EXPECT_EQ(11, value);
+            seen++;
+          } else if (name == folly::sformat("stat2.60")) {
+            EXPECT_EQ(22, value);
+            seen++;
+          }
+        });
+    EXPECT_EQ(2, seen);
+
+    seen = 0;
+    counters.exportStats(
+        std::chrono::seconds{30},
+        [&seen](folly::StringPiece name, uint64_t value) mutable {
+          if (name == "stat1") {
+            EXPECT_EQ(11, value);
+            seen++;
+          } else if (name == folly::sformat("stat2.60")) {
+            EXPECT_EQ(44, value);
+            seen++;
+          }
+        });
+    EXPECT_EQ(2, seen);
+  }
+
+  void testStatSnapshotTest() {
+    typename AllocatorT::Config config;
+    config.setCacheSize(20 * Slab::kSize);
+    config.cacheName = "foobar";
+    AllocatorT alloc(config);
+
+    const std::string statPrefix = "cachelib." + config.cacheName + ".";
+    const std::string numNvmGets = statPrefix + "nvm.gets";
+    const std::string numNvmGetMiss = statPrefix + "nvm.gets.miss";
+    const std::string numCacheGets = statPrefix + "cache.gets";
+    const std::string numCacheGetMiss = statPrefix + "cache.gets.miss";
+
+    alloc.counters_.updateDelta(numNvmGets, 2);
+    alloc.counters_.updateDelta(numCacheGets, 4);
+    alloc.counters_.updateDelta(numNvmGetMiss, 1);
+    alloc.counters_.updateDelta(numCacheGetMiss, 2);
+
+    const auto cacheHitRate = alloc.calculateCacheHitRate(statPrefix);
+    EXPECT_EQ(cacheHitRate.ram, 50);
+    EXPECT_EQ(cacheHitRate.nvm, 50);
+    EXPECT_EQ(cacheHitRate.overall, 75);
+    EXPECT_EQ(alloc.counters_.getDelta(numNvmGets), 2);
+    EXPECT_EQ(alloc.counters_.getDelta(numCacheGets), 4);
+    EXPECT_EQ(alloc.counters_.getDelta(numNvmGetMiss), 1);
+    EXPECT_EQ(alloc.counters_.getDelta(numCacheGetMiss), 2);
+
+    alloc.counters_.updateDelta(numNvmGets, 4);
+    alloc.counters_.updateDelta(numCacheGets, 9);
+    alloc.counters_.updateDelta(numNvmGetMiss, 2);
+    alloc.counters_.updateDelta(numCacheGetMiss, 4);
+    const auto cacheHitRate1 = alloc.calculateCacheHitRate(statPrefix);
+    EXPECT_EQ(cacheHitRate1.ram, 60);
+    EXPECT_EQ(cacheHitRate1.nvm, 50);
+    EXPECT_EQ(cacheHitRate1.overall, 80);
+
+    // Bad stats
+    alloc.counters_.updateDelta(numNvmGets, 0);
+    alloc.counters_.updateDelta(numCacheGets, 0);
+    alloc.counters_.updateDelta(numNvmGetMiss, 0);
+    alloc.counters_.updateDelta(numCacheGetMiss, 0);
+    const auto cacheHitRate2 = alloc.calculateCacheHitRate(statPrefix);
+    EXPECT_EQ(cacheHitRate2.ram, 0);
+    EXPECT_EQ(cacheHitRate2.nvm, 0);
+    EXPECT_EQ(cacheHitRate2.overall, 0);
+
+    int intervalNameExists = 0;
+    alloc.exportStats(
+        statPrefix, std::chrono::seconds{60},
+        [&intervalNameExists](auto name, auto value) {
+          if (name == "cachelib.foobar.nvm.gets.60" && value == 0) {
+            intervalNameExists++;
+          }
+          if (name == "cachelib.foobar.nvm.gets.miss.60" && value == 0) {
+            intervalNameExists++;
+          }
+        });
+    alloc.find("some non-existent key");
+    alloc.exportStats(
+        statPrefix,
+        // We will convert a custom interval to 60 seconds interval. So the
+        // one "FIND" will become two operations when averaged out to 60
+        // seocnds.
+        std::chrono::seconds{30}, [&intervalNameExists](auto name, auto value) {
+          if (name == "cachelib.foobar.cache.gets.60" && value == 2) {
+            intervalNameExists++;
+          }
+          if (name == "cachelib.foobar.cache.gets.miss.60" && value == 2) {
+            intervalNameExists++;
+          }
+        });
+    EXPECT_EQ(intervalNameExists, 4);
   }
 };
 } // namespace tests

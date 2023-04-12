@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,6 +26,7 @@
 #include "cachelib/allocator/ICompactCache.h"
 #include "cachelib/allocator/memory/MemoryAllocator.h"
 #include "cachelib/common/Hash.h"
+#include "cachelib/common/Utils.h"
 
 namespace facebook {
 namespace cachelib {
@@ -52,6 +53,7 @@ enum class AccessMode { kRead, kWrite };
 // used by RemoveCB, indicating if the removal from the MMContainer was an
 // eviction or not.
 enum class RemoveContext { kEviction, kNormal };
+
 // used by ItemDestructor, indicating how the item is destructed
 enum class DestructorContext {
   // item was in dram and evicted from dram. it could have
@@ -116,8 +118,7 @@ class CacheBase {
 
   // @return a map of <stat name -> stat value> representation for all the nvm
   // cache stats. This is useful for our monitoring to directly upload them.
-  virtual std::unordered_map<std::string, double> getNvmCacheStatsMap()
-      const = 0;
+  virtual util::StatsMap getNvmCacheStatsMap() const = 0;
 
   // @return a map of <stat name -> stat value> representation for all the event
   // tracker stats. If no event tracker exists, this will be empty
@@ -135,6 +136,19 @@ class CacheBase {
 
   // @return the slab release stats.
   virtual SlabReleaseStats getSlabReleaseStats() const = 0;
+
+  // export stats via callback. This function is not thread safe
+  //
+  // @param statPrefix prefix to be added for stat names
+  // @param aggregationInterval interval for delta stats; stat name will be
+  //                            suffixed with ".<aggregationInterval>".
+  // @param cb callback used to provide the stat
+
+  // Update stats via callback.
+  // Each stat name will be suffixed
+  void exportStats(const std::string& statPrefix,
+                   std::chrono::seconds aggregationInterval,
+                   std::function<void(folly::StringPiece, uint64_t)> cb) const;
 
   // Set rebalancing strategy
   //
@@ -177,6 +191,9 @@ class CacheBase {
   // return a list of all valid pool ids.
   virtual std::set<PoolId> getPoolIds() const = 0;
 
+  // returns the pool's name by its poolId.
+  virtual std::string getPoolName(PoolId poolId) const = 0;
+
   // returns a list of pools excluding compact cache pools
   virtual std::set<PoolId> getRegularPoolIds() const = 0;
 
@@ -191,8 +208,10 @@ class CacheBase {
   virtual const ICompactCache& getCompactCache(PoolId pid) const = 0;
 
   // return object cache stats
-  virtual void getObjectCacheCounters(
-      std::function<void(folly::StringPiece, uint64_t)>) const {}
+  virtual void getObjectCacheCounters(const util::CounterVisitor&) const {}
+
+  // <Stat -> Count/Delta> maps
+  mutable RateMap counters_;
 
  protected:
   // move bytes from one pool to another. The source pool should be at least
@@ -277,6 +296,39 @@ class CacheBase {
   // @param numSlabs   The number of slabs to reclaim for the pool
   // @return The number of slabs that were actually reclaimed (<= numSlabs)
   virtual unsigned int reclaimSlabs(PoolId id, size_t numSlabs) = 0;
+
+  // Update pool stats
+  //   @param pid    the poolId that needs updating
+  void updatePoolStats(const std::string& statPrefix, PoolId pid) const;
+
+  // Update stats specific to compact caches
+  void updateCompactCacheStats(const std::string& statPrefix,
+                               const ICompactCache& c) const;
+
+  // Update stats specific to the event tracker
+  void updateEventTrackerStats(const std::string& statPrefix) const;
+
+  // Update stats specific to NvmCache
+  void updateNvmCacheStats(const std::string& statPrefix) const;
+
+  // Update global stats
+  void updateGlobalCacheStats(const std::string& statPrefix) const;
+
+  // Update object cache stats
+  void updateObjectCacheStats(const std::string& statPrefix) const;
+
+  // Util method to visit estimates
+  static void visitEstimates(const util::CounterVisitor& v,
+                             const util::PercentileStats::Estimates& est,
+                             folly::StringPiece name);
+
+  // return hit rate based on diff between current cache and snapshot values
+  struct CacheHitRate {
+    double overall;
+    double ram;
+    double nvm;
+  };
+  CacheHitRate calculateCacheHitRate(const std::string& statPrefix) const;
 
   // Protect 'poolRebalanceStragtegies_' and `poolResizeStrategies_`
   // and `poolOptimizeStrategy_`

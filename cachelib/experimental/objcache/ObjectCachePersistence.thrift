@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,9 +17,9 @@
 namespace cpp2 facebook.cachelib.objcache.serialization
 
 struct Item {
-  1: byte poolId
-  2: i32 creationTime,
-  3: i32 expiryTime,
-  4: string key,
-  5: string payload,
+  1: byte poolId;
+  2: i32 creationTime;
+  3: i32 expiryTime;
+  4: string key;
+  5: string payload;
 }

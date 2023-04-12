@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ namespace utils {
 using NavyConfig = navy::NavyConfig;
 inline NavyConfig getNvmTestConfig(const std::string& cacheDir) {
   NavyConfig config{};
-  config.setSimpleFile(cacheDir + "/navy", 100 * 1024ULL * 1024ULL);
+  config.setSimpleFile(cacheDir + "/navy", 200 * 1024ULL * 1024ULL);
   config.setDeviceMetadataSize(4 * 1024 * 1024);
   config.setBlockSize(1024);
   config.setNavyReqOrderingShards(10);

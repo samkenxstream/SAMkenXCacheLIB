@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
-
 #include <gtest/gtest.h>
 
 #include "cachelib/allocator/CacheAllocator.h"
@@ -28,7 +26,6 @@
 namespace facebook {
 namespace cachelib {
 namespace tests {
-
 class NvmAdmissionPolicyTest : public testing::Test {
  public:
   // Expose the admission policy for testing.
@@ -52,11 +49,10 @@ class MockFailedNvmAdmissionPolicy : public NvmAdmissionPolicy<Cache> {
   MockFailedNvmAdmissionPolicy() = default;
 
  protected:
-  virtual std::unordered_map<std::string, double> getCountersImpl() override {
-    std::unordered_map<std::string, double> ret;
-    ret["nvm_mock_failed_policy"] = 1;
-    return ret;
+  virtual void getCountersImpl(const util::CounterVisitor& v) override {
+    v("nvm_mock_failed_policy", 1);
   }
+
   virtual bool acceptImpl(const Item& it,
                           folly::Range<ChainedItemIter>) override {
     switch (it.getKey().size() % 3) {

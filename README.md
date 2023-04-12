@@ -28,7 +28,7 @@ See [CacheBench](https://cachelib.org/docs/Cache_Library_User_Guides/Cachebench_
 and examples.
 
 ## Versioning
-CacheLib has one single version number `facebook::cachelib::kCachelibVersion` that can be located at [CacheVersion.h](https://github.com/facebook/CacheLib/blob/main/cachelib/allocator/CacheVersion.h#L31). This version number must be incremented when incompatible changes are introduced. A change is incompatible if it could cause a complication failure due to removing public API or requires dropping the cache. Details about the compatility information when the version number increases can be found in the [changelog](https://github.com/facebook/CacheLib/blob/main/CHANGELOG.md).
+CacheLib has one single version number `facebook::cachelib::kCachelibVersion` that can be located at [CacheVersion.h](https://github.com/facebook/CacheLib/blob/main/cachelib/allocator/CacheVersion.h#L31). This version number must be incremented when incompatible changes are introduced. A change is incompatible if it could cause a complication failure due to removing public API or requires dropping the cache. Details about the compatibility information when the version number increases can be found in the [changelog](https://github.com/facebook/CacheLib/blob/main/CHANGELOG.md).
 
 
 ## Building and installation
@@ -50,7 +50,7 @@ cd CacheLib
 Re-running `./contrib/build.sh` will update CacheLib and its dependencies
 to their latest versions and rebuild them.
 
-See [build](https://cachelib.org/docs/installation/installation) for more details about
+See [build](https://cachelib.org/docs/installation/) for more details about
 the building and installation process.
 
 
@@ -77,3 +77,18 @@ https://www.facebook.com/whitehat
 
 Facebook's security team will triage your report and determine whether or not is
 it eligible for a bounty under our program.
+
+
+## Build status
+
+Clicking on a badge will show you the recent builds for that OS. If your target OS's build is failing, you may wish to check recent issues and PRs for known workarounds.
+
+- [![CentOS 8.1](https://github.com/facebook/cachelib/actions/workflows/build-cachelib-centos-8-1.yml/badge.svg?event=schedule)](https://github.com/facebook/cachelib/actions/workflows/build-cachelib-centos-8-1.yml?query=event%3Aschedule)
+- [![CentOS 8.5](https://github.com/facebook/cachelib/actions/workflows/build-cachelib-centos-8-5.yml/badge.svg?event=schedule)](https://github.com/facebook/cachelib/actions/workflows/build-cachelib-centos-8-5.yml?query=event%3Aschedule)
+- [![Debian 10](https://github.com/facebook/cachelib/actions/workflows/build-cachelib-debian-10.yml/badge.svg?event=schedule)](https://github.com/facebook/cachelib/actions/workflows/build-cachelib-debian-10.yml?query=event%3Aschedule)
+- [![Fedora 36](https://github.com/facebook/cachelib/actions/workflows/build-cachelib-fedora-36.yml/badge.svg?event=schedule)](https://github.com/facebook/cachelib/actions/workflows/build-cachelib-fedora-36.yml?query=event%3Aschedule)
+- [![Rocky Linux 8](https://github.com/facebook/cachelib/actions/workflows/build-cachelib-rockylinux-8.yml/badge.svg?event=schedule)](https://github.com/facebook/cachelib/actions/workflows/build-cachelib-rockylinux-8.yml?query=event%3Aschedule)
+- [![Rocky Linux 9](https://github.com/facebook/cachelib/actions/workflows/build-cachelib-rockylinux-9.yml/badge.svg?event=schedule)](https://github.com/facebook/cachelib/actions/workflows/build-cachelib-rockylinux-9.yml?query=event%3Aschedule)
+- [![Ubuntu 18](https://github.com/facebook/cachelib/actions/workflows/build-cachelib-ubuntu-18.yml/badge.svg?event=schedule)](https://github.com/facebook/cachelib/actions/workflows/build-cachelib-ubuntu-18.yml?query=event%3Aschedule)
+- [![Ubuntu 20](https://github.com/facebook/cachelib/actions/workflows/build-cachelib-ubuntu-20.yml/badge.svg?event=schedule)](https://github.com/facebook/cachelib/actions/workflows/build-cachelib-ubuntu-20.yml?query=event%3Aschedule)
+- [![Ubuntu 22](https://github.com/facebook/cachelib/actions/workflows/build-cachelib-ubuntu-22.yml/badge.svg?event=schedule)](https://github.com/facebook/cachelib/actions/workflows/build-cachelib-ubuntu-22.yml?query=event%3Aschedule)

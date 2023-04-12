@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -208,10 +208,9 @@ auto copyHashTable(
   if (newSize > kMaxHashTableSize) {
     // This shouldn't happen. Too many entries for a single object in memory.
     auto exStr = folly::sformat(
-        "Index has maxed out for key: {}. Existing entries: {}, New requested "
-        "capacity: {}. New requested size: {}",
-        oldHashTable.viewWriteHandle()->getKey(), oldHashTable->numEntries(),
-        newCapacity, newSize);
+        "Index has maxed out for the provided key. Existing entries: {}, New "
+        "requested capacity: {}. New requested size: {}",
+        oldHashTable->numEntries(), newCapacity, newSize);
     throw cachelib::MapIndexMaxedOut(exStr.c_str());
   }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ namespace cachelib {
 constexpr size_t kGBytes = 1024 * 1024 * 1024;
 
 MemoryMonitor::MemoryMonitor(CacheBase& cache,
-                             Config config,
+                             const Config& config,
                              std::shared_ptr<RebalanceStrategy> strategy)
     : cache_(cache),
       mode_(config.mode),
@@ -173,8 +173,6 @@ void MemoryMonitor::checkPoolsAndAdviseReclaim() {
           ++slabsAdvised;
           const auto elapsed_time =
               static_cast<uint64_t>(util::getCurrentTimeMs() - now);
-          stats.numSlabsForClass(classId);
-          stats.evictionAgeForClass(classId);
           // Log the event about the Pool which released the Slab along with
           // the number of slabs.
           stats_.addSlabReleaseEvent(

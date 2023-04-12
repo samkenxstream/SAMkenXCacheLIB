@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <stdexcept>
@@ -68,7 +69,7 @@ class ObjectCacheBase : public CacheBase {
 
   // @return a map of <stat name -> stat value> representation for all the nvm
   // cache stats. This is useful for our monitoring to directly upload them.
-  std::unordered_map<std::string, double> getNvmCacheStatsMap() const override {
+  util::StatsMap getNvmCacheStatsMap() const override {
     return l1Cache_->getNvmCacheStatsMap();
   }
 
@@ -107,6 +108,11 @@ class ObjectCacheBase : public CacheBase {
   // return a list of all valid pool ids.
   std::set<PoolId> getPoolIds() const override {
     return l1Cache_->getPoolIds();
+  }
+
+  // returns the pool's name by its poolId.
+  std::string getPoolName(PoolId poolId) const override {
+    return l1Cache_->getPoolName(poolId);
   }
 
   // returns a list of pools excluding compact cache pools

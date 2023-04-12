@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -99,6 +99,7 @@ class SysVShmSegment : public ShmBase {
   void lockPagesInMemory() const;
   void createReferenceMapping();
   void deleteReferenceMapping() const;
+  void memBind(void* addr) const;
 
   //  the key identifier for the shared memory
   KeyType key_{kInvalidKey};

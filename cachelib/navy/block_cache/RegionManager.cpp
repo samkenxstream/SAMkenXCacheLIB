@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -106,9 +106,7 @@ void RegionManager::reset() {
 Region::FlushRes RegionManager::flushBuffer(const RegionId& rid) {
   auto& region = getRegion(rid);
   auto callBack = [this](RelAddress addr, BufferView view) {
-    auto writeBuffer = device_.makeIOBuffer(view.size());
-    writeBuffer.copyFrom(0, view);
-    if (!deviceWrite(addr, std::move(writeBuffer))) {
+    if (!deviceWrite(addr, view)) {
       return false;
     }
     numInMemBufWaitingFlush_.dec();
@@ -208,9 +206,9 @@ OpenStatus RegionManager::getCleanRegion(RegionId& rid) {
     }
   }
   for (uint32_t i = 0; i < newSched; i++) {
-    scheduler_.enqueue(
-        [this] { return startReclaim(); }, "reclaim", JobType::Reclaim);
+    startReclaim();
   }
+
   if (status == OpenStatus::Ready) {
     status = assignBufferToRegion(rid);
     if (status != OpenStatus::Ready) {
@@ -277,13 +275,17 @@ void RegionManager::doFlush(RegionId rid, bool async) {
   }
 }
 
-JobExitCode RegionManager::startReclaim() {
-  auto rid = evict();
-  if (!rid.valid()) {
-    return JobExitCode::Reschedule;
-  }
+void RegionManager::startReclaim() {
   scheduler_.enqueue(
-      [this, rid] {
+      [this, rid = RegionId()]() mutable {
+        if (!rid.valid()) {
+          rid = evict();
+          // evict() can fail to find a victim, where it needs to be retried
+          if (!rid.valid()) {
+            return JobExitCode::Reschedule;
+          }
+        }
+
         const auto startTime = getSteadyClock();
         auto& region = getRegion(rid);
         if (!region.readyForReclaim()) {
@@ -316,9 +318,8 @@ JobExitCode RegionManager::startReclaim() {
         releaseEvictedRegion(rid, startTime);
         return JobExitCode::Done;
       },
-      "reclaim.evict",
+      "reclaim",
       JobType::Reclaim);
-  return JobExitCode::Done;
 }
 
 RegionDescriptor RegionManager::openForRead(RegionId rid, uint64_t seqNumber) {
@@ -485,11 +486,11 @@ bool RegionManager::isValidIORange(uint32_t offset, uint32_t size) const {
   return static_cast<uint64_t>(offset) + size <= regionSize_;
 }
 
-bool RegionManager::deviceWrite(RelAddress addr, Buffer buf) {
-  const auto bufSize = buf.size();
+bool RegionManager::deviceWrite(RelAddress addr, BufferView view) {
+  const auto bufSize = view.size();
   XDCHECK(isValidIORange(addr.offset(), bufSize));
   auto physOffset = physicalOffset(addr);
-  if (!device_.write(physOffset, std::move(buf))) {
+  if (!device_.write(physOffset, view)) {
     return false;
   }
   physicalWrittenCount_.add(bufSize);
@@ -523,19 +524,29 @@ Buffer RegionManager::read(const RegionDescriptor& desc,
 void RegionManager::flush() { device_.flush(); }
 
 void RegionManager::getCounters(const CounterVisitor& visitor) const {
-  visitor("navy_bc_reclaim", reclaimCount_.get());
-  visitor("navy_bc_reclaim_time", reclaimTimeCountUs_.get());
-  visitor("navy_bc_region_reclaim_errors", reclaimRegionErrors_.get());
-  visitor("navy_bc_evicted", evictedCount_.get());
+  visitor("navy_bc_reclaim", reclaimCount_.get(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_bc_reclaim_time", reclaimTimeCountUs_.get(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_bc_region_reclaim_errors",
+          reclaimRegionErrors_.get(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_bc_evictions",
+          evictedCount_.get(),
+          CounterVisitor::CounterType::RATE);
   visitor("navy_bc_num_regions", numRegions_);
   visitor("navy_bc_num_clean_regions", cleanRegions_.size());
   visitor("navy_bc_external_fragmentation", externalFragmentation_.get());
-  visitor("navy_bc_physical_written", physicalWrittenCount_.get());
+  visitor("navy_bc_physical_written", physicalWrittenCount_.get(),
+          CounterVisitor::CounterType::RATE);
   visitor("navy_bc_inmem_active", numInMemBufActive_.get());
   visitor("navy_bc_inmem_waiting_flush", numInMemBufWaitingFlush_.get());
-  visitor("navy_bc_inmem_flush_retries", numInMemBufFlushRetries_.get());
-  visitor("navy_bc_inmem_flush_failures", numInMemBufFlushFailures_.get());
-  visitor("navy_bc_inmem_cleanup_retries", numInMemBufCleanupRetries_.get());
+  visitor("navy_bc_inmem_flush_retries", numInMemBufFlushRetries_.get(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_bc_inmem_flush_failures", numInMemBufFlushFailures_.get(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_bc_inmem_cleanup_retries", numInMemBufCleanupRetries_.get(),
+          CounterVisitor::CounterType::RATE);
   policy_->getCounters(visitor);
 }
 } // namespace navy

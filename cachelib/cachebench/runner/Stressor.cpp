@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,10 +21,9 @@
 #include "cachelib/cachebench/runner/CacheStressor.h"
 #include "cachelib/cachebench/runner/FastShutdown.h"
 #include "cachelib/cachebench/runner/IntegrationStressor.h"
-#include "cachelib/cachebench/workload/AmplifiedReplayGenerator.h"
+#include "cachelib/cachebench/workload/KVReplayGenerator.h"
 #include "cachelib/cachebench/workload/OnlineGenerator.h"
 #include "cachelib/cachebench/workload/PieceWiseReplayGenerator.h"
-#include "cachelib/cachebench/workload/ReplayGenerator.h"
 #include "cachelib/cachebench/workload/WorkloadGenerator.h"
 #include "cachelib/common/Utils.h"
 
@@ -42,6 +41,8 @@ ThroughputStats& ThroughputStats::operator+=(const ThroughputStats& other) {
   delNotFound += other.delNotFound;
   addChained += other.addChained;
   addChainedFailure += other.addChainedFailure;
+  couldExistOp += other.couldExistOp;
+  couldExistOpFalse += other.couldExistOpFalse;
   ops += other.ops;
 
   return *this;
@@ -72,6 +73,13 @@ void ThroughputStats::render(uint64_t elapsedTimeNs, std::ostream& out) const {
       addChained == 0 ? 0.0
                       : 100.0 * (addChained - addChainedFailure) / addChained;
 
+  const uint64_t couldExistPerSec =
+      util::narrow_cast<uint64_t>(couldExistOp / elapsedSecs);
+  const double couldExistSuccessRate =
+      couldExistOp == 0
+          ? 0.0
+          : 100.0 * (couldExistOp - couldExistOpFalse) / couldExistOp;
+
   out << std::fixed;
   out << folly::sformat("{:10}: {:.2f} million", "Total Ops", ops / 1e6)
       << std::endl;
@@ -83,6 +91,7 @@ void ThroughputStats::render(uint64_t elapsedTimeNs, std::ostream& out) const {
         << std::endl;
   };
   outFn("get", getPerSec, "success", getSuccessRate);
+  outFn("couldExist", couldExistPerSec, "success", couldExistSuccessRate);
   outFn("set", setPerSec, "success", setSuccessRate);
   outFn("del", delPerSec, "found", delSuccessRate);
   if (update > 0) {
@@ -132,11 +141,7 @@ std::unique_ptr<GeneratorBase> makeGenerator(const StressorConfig& config) {
   if (config.generator == "piecewise-replay") {
     return std::make_unique<PieceWiseReplayGenerator>(config);
   } else if (config.generator == "replay") {
-    if (config.numThreads > 1) {
-      return std::make_unique<AmplifiedReplayGenerator>(config);
-    } else {
-      return std::make_unique<ReplayGenerator>(config);
-    }
+    return std::make_unique<KVReplayGenerator>(config);
   } else if (config.generator.empty() || config.generator == "workload") {
     // TODO: Remove the empty() check once we label workload-based configs
     // properly

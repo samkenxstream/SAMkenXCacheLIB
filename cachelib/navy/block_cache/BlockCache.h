@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,6 +48,7 @@ class BlockCache final : public Engine {
   // See CacheProto for details
   struct Config {
     Device* device{};
+    ExpiredCheck checkExpired;
     DestructorCallback destructorCb;
     // Checksum data read/written
     bool checksum{};
@@ -85,7 +86,10 @@ class BlockCache final : public Engine {
     bool preciseRemove{false};
 
     // Calculates the total region number.
-    uint32_t getNumRegions() const { return cacheSize / regionSize; }
+    uint32_t getNumRegions() const {
+      XDCHECK_EQ(0ul, cacheSize % regionSize);
+      return cacheSize / regionSize;
+    }
 
     // Checks invariants. Throws exception if failed.
     Config& validate();
@@ -100,6 +104,9 @@ class BlockCache final : public Engine {
   BlockCache(const BlockCache&) = delete;
   BlockCache& operator=(const BlockCache&) = delete;
   ~BlockCache() override = default;
+
+  // return the size of usable space
+  uint64_t getSize() const override { return regionManager_.getSize(); }
 
   // Checks if the key could exist in block cache. This can be used as a
   // pre-check to optimize cache lookups to avoid calling lookup in an async IO
@@ -171,6 +178,10 @@ class BlockCache final : public Engine {
     XDCHECK(folly::isPowTwo(allocAlignSize_));
     return allocAlignSize_;
   }
+
+  // Return a Buffer containing NvmItem randomly sampled in the backing store
+  std::pair<Status, std::string /* key */> getRandomAlloc(
+      Buffer& value) override;
 
   // The minimum alloc alignment size can be as small as 1. Since the
   // test cases have very small device size, they will end up with alloc
@@ -306,11 +317,10 @@ class BlockCache final : public Engine {
                                       uint32_t entrySize,
                                       RelAddress currAddr);
 
-  // Removes an entry key from the index and the item size from size
-  // distribution.
+  // Removes an entry key from the index.
   // @return true if the item is successfully removed; false if the item cannot
   //         be found or was removed earlier.
-  bool removeItem(HashedKey hk, uint32_t entrySize, RelAddress currAddr);
+  bool removeItem(HashedKey hk, RelAddress currAddr);
 
   void validate(Config& config) const;
 
@@ -322,6 +332,7 @@ class BlockCache final : public Engine {
 
   const serialization::BlockCacheConfig config_;
   const uint16_t numPriorities_{};
+  const ExpiredCheck checkExpired_;
   const DestructorCallback destructorCb_;
   const bool checksumData_{};
   // reference to the under-lying device.
@@ -369,10 +380,14 @@ class BlockCache final : public Engine {
   mutable AtomicCounter removeCount_;
   mutable AtomicCounter succRemoveCount_;
   mutable AtomicCounter evictionLookupMissCounter_;
+  mutable AtomicCounter evictionExpiredCount_;
   mutable AtomicCounter allocErrorCount_;
   mutable AtomicCounter logicalWrittenCount_;
+  // TODO: deprecate hole count and hole size when we have
+  //       confirmed usedSizeBytes is working correctly in prod
   mutable AtomicCounter holeCount_;
   mutable AtomicCounter holeSizeTotal_;
+  mutable AtomicCounter usedSizeBytes_;
   mutable AtomicCounter reinsertionErrorCount_;
   mutable AtomicCounter reinsertionCount_;
   mutable AtomicCounter reinsertionBytes_;
@@ -381,7 +396,6 @@ class BlockCache final : public Engine {
   mutable AtomicCounter removeAttemptCollisions_;
   mutable AtomicCounter cleanupEntryHeaderChecksumErrorCount_;
   mutable AtomicCounter cleanupValueChecksumErrorCount_;
-  mutable SizeDistribution sizeDist_;
   mutable AtomicCounter lookupForItemDestructorErrorCount_;
 };
 } // namespace navy

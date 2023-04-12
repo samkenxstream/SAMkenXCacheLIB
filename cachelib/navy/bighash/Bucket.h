@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -72,7 +72,6 @@ class FOLLY_PACK_ATTR Bucket {
 
   // Initialize a brand new Bucket given a piece of memory in the case
   // that the existing bucket is invalid. (I.e. checksum or generation
-  // mismatch). Refer to comments at the top on what do we use checksum
   // and generation time for.
   static Bucket& initNew(MutableBufferView view, uint64_t generationTime);
 
@@ -96,14 +95,19 @@ class FOLLY_PACK_ATTR Bucket {
   //       remove an existing key before calling insert.
   //
   // Insert into the bucket. Trigger eviction and invoke @destructorCb if
-  // not enough space. Return number of entries evicted.
-  uint32_t insert(HashedKey hk,
-                  BufferView value,
-                  const DestructorCallback& destructorCb);
+  // not enough space.
+  // Return <number of entries evicted, number of entries expired> pair
+  std::pair<uint32_t, uint32_t> insert(HashedKey hk,
+                                       BufferView value,
+                                       const ExpiredCheck& checkExpired,
+                                       const DestructorCallback& destructorCb);
 
   // Remove an entry corresponding to the key. If found, invoke @destructorCb
   // before returning true. Return number of entries removed.
   uint32_t remove(HashedKey hk, const DestructorCallback& destructorCb);
+
+  // return a BufferView for the item randomly sampled in the Bucket
+  std::pair<std::string, BufferView> getRandomAlloc();
 
   // return an iterator of items in the bucket
   Iterator getFirst() const;
@@ -114,7 +118,15 @@ class FOLLY_PACK_ATTR Bucket {
       : generationTime_{generationTime}, storage_{capacity} {}
 
   // Reserve enough space for @size by evicting. Return number of evictions.
-  uint32_t makeSpace(uint32_t size, const DestructorCallback& destructorCb);
+  // Returns <number of evictions, number of expirations> pair
+  std::pair<uint32_t, uint32_t> makeSpace(
+      uint32_t size,
+      const ExpiredCheck& checkExpired,
+      const DestructorCallback& destructorCb);
+
+  uint32_t removeExpired(BucketStorage::Allocation itr,
+                         const ExpiredCheck& checkExpired,
+                         const DestructorCallback& destructorCb);
 
   uint32_t checksum_{};
   uint64_t generationTime_{};

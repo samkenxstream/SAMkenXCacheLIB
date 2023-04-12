@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,10 +37,11 @@ class PoolResizeStrategy : public RebalanceStrategy {
       : RebalanceStrategy(PoolResize), minSlabsPerAllocClass_(minSlabs) {}
 
   // implementation that picks a victim
-  ClassId pickVictimImpl(const CacheBase& cache, PoolId poolId) final {
+  ClassId pickVictimImpl(const CacheBase&,
+                         PoolId,
+                         const PoolStats& stats) final {
     // pick the class with maximum eviction age. also, ensure that the class
     // does not drop below threshold of slabs.
-    const auto stats = cache.getPoolStats(poolId);
 
     auto victims = filterByNumEvictableSlabs(
         stats, stats.getClassIds(), minSlabsPerAllocClass_);

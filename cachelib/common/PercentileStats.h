@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,9 @@
 #pragma once
 
 #include <folly/Range.h>
+
+#include <stdexcept>
+#include <utility>
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
 #include <folly/stats/QuantileEstimator.h>
@@ -28,8 +31,6 @@
 namespace facebook {
 namespace cachelib {
 namespace util {
-using CounterVisitor =
-    std::function<void(folly::StringPiece name, double count)>;
 
 class PercentileStats {
  public:
@@ -51,6 +52,21 @@ class PercentileStats {
     uint64_t p100;
   };
 
+  // visit each latency estimate using the visitor.
+  // @param visitor   the stat visitor
+  // @param rst       the estimates to be visited
+  // @param prefix    prefix for the stat name.
+  static void visitQuantileEstimates(const CounterVisitor& visitor,
+                                     const Estimates& rst,
+                                     folly::StringPiece prefix);
+
+  static void visitQuantileEstimates(
+      const std::function<void(folly::StringPiece, double)>& visitor,
+      const Estimates& rst,
+      folly::StringPiece prefix) {
+    visitQuantileEstimates(CounterVisitor(visitor), rst, prefix);
+  }
+
   PercentileStats() : estimator_{std::chrono::seconds{kDefaultWindowSize}} {}
   PercentileStats(std::chrono::seconds windowSize) : estimator_{windowSize} {}
 
@@ -66,6 +82,12 @@ class PercentileStats {
   // pass in multiplied by cost of estimating an individual quantile
   Estimates estimate();
 
+  void visitQuantileEstimator(
+      const std::function<void(folly::StringPiece, double)>& visitor,
+      folly::StringPiece statPrefix) {
+    visitQuantileEstimator(CounterVisitor{visitor}, statPrefix);
+  }
+
   // visit each latency estimate using the visitor.
   // @param visitor   the stat visitor
   // @param rst       the estimates to be visited
@@ -75,14 +97,6 @@ class PercentileStats {
     auto rst = estimate();
     visitQuantileEstimates(visitor, rst, statPrefix);
   }
-
-  // visit each latency estimate using the visitor.
-  // @param visitor   the stat visitor
-  // @param rst       the estimates to be visited
-  // @param prefix    prefix for the stat name.
-  static void visitQuantileEstimates(const CounterVisitor& visitor,
-                                     const Estimates& rst,
-                                     folly::StringPiece prefix);
 
  private:
   static const std::array<double, 14> kQuantiles;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,12 +33,15 @@ struct AlwaysPickOneRebalanceStrategy : public RebalanceStrategy {
  private:
   ClassId pickVictim(const CacheBase&, PoolId) { return victim; }
 
-  ClassId pickVictimImpl(const CacheBase& allocator, PoolId pid) override {
+  ClassId pickVictimImpl(const CacheBase& allocator,
+                         PoolId pid,
+                         const PoolStats&) override {
     return pickVictim(allocator, pid);
   }
 
   RebalanceContext pickVictimAndReceiverImpl(const CacheBase& allocator,
-                                             PoolId pid) override {
+                                             PoolId pid,
+                                             const PoolStats&) override {
     return {pickVictim(allocator, pid), receiver};
   }
 };

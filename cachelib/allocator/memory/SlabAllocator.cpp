@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,7 +48,6 @@ using PtrType = CompressedPtr::PtrType;
 constexpr uint64_t SlabAllocator::kAddressMask;
 constexpr PtrType CompressedPtr::kAllocIdxMask;
 constexpr unsigned int CompressedPtr::kNumAllocIdxBits;
-constexpr unsigned int CompressedPtr::kNumSlabIdxBits;
 
 constexpr unsigned int SlabAllocator::kLockSleepMS;
 constexpr size_t SlabAllocator::kPagesPerStep;

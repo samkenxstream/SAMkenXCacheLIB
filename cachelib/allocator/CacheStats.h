@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -289,6 +289,22 @@ struct ReaperStats {
   uint64_t avgTraversalTimeMs{0};
 };
 
+// Stats for reaper
+struct RebalancerStats {
+  uint64_t numRuns{0};
+
+  uint64_t numRebalancedSlabs{0};
+
+  uint64_t lastRebalanceTimeMs{0};
+  uint64_t avgRebalanceTimeMs{0};
+
+  uint64_t lastReleaseTimeMs{0};
+  uint64_t avgReleaseTimeMs{0};
+
+  uint64_t lastPickTimeMs{0};
+  uint64_t avgPickTimeMs{0};
+};
+
 // CacheMetadata type to export
 struct CacheMetadata {
   // allocator_version
@@ -376,6 +392,9 @@ struct GlobalCacheStats {
 
   // number of evictions from NvmCache
   uint64_t numNvmEvictions{0};
+
+  // number of evictions where items leave both RAM and NvmCache entirely
+  uint64_t numCacheEvictions{0};
 
   // number of evictions from nvm that found an inconsistent state in RAM
   uint64_t numNvmUncleanEvict{0};
@@ -491,6 +510,9 @@ struct GlobalCacheStats {
   // stats related to the reaper
   ReaperStats reaperStats;
 
+  // stats related to the pool rebalancer
+  RebalancerStats rebalancerStats;
+
   uint64_t numNvmRejectsByExpiry{};
   uint64_t numNvmRejectsByClean{};
   uint64_t numNvmRejectsByAP{};
@@ -503,7 +525,7 @@ struct GlobalCacheStats {
   uint64_t numAbortedSlabReleases{0};
 
   // Number of times slab was skipped when reaper runs
-  uint64_t numSkippedSlabReleases{0};
+  uint64_t numReaperSkippedSlabs{0};
 
   // current active handles outstanding. This stat should
   // not go to negative. If it's negative, it means we have
@@ -513,14 +535,19 @@ struct GlobalCacheStats {
 
 struct CacheMemoryStats {
   // current memory used for cache in bytes. This excludes the memory used for
-  // headers. This can change as memory is advised and reclaimed.
-  size_t cacheSize{0};
+  // slab headers and the memory returned temporarily to system (i.e., advised).
+  size_t ramCacheSize{0};
 
-  // regular pool memory size in bytes
-  size_t regularCacheSize{0};
+  // configured total ram cache size, excluding memory used for slab headers.
+  size_t configuredRamCacheSize{0};
 
-  // compact cache pool memory size in bytes
-  size_t compactCacheSize{0};
+  // configured regular pool memory size in bytes.
+  // the actually used size may be less than this
+  size_t configuredRamCacheRegularSize{0};
+
+  // configured compact cache pool memory size in bytes
+  // the actually used size may be less than this
+  size_t configuredRamCacheCompactSize{0};
 
   // current advised away memory size in bytes.
   size_t advisedSize{0};
@@ -534,17 +561,17 @@ struct CacheMemoryStats {
   // size of the nvm cache in addition to the ram cache.
   size_t nvmCacheSize{0};
 
-  // returns the advised memory in the unit of slabs.
-  size_t numAdvisedSlabs() const { return advisedSize / Slab::kSize; }
-
-  // returne usable portion of the cache size
-  size_t usableCacheSize() const { return cacheSize - advisedSize; }
-
   // amount of memory available on the host
   size_t memAvailableSize{0};
 
   // rss size of the process
   size_t memRssSize{0};
+
+  // returns the advised memory in the unit of slabs.
+  size_t numAdvisedSlabs() const { return advisedSize / Slab::kSize; }
+
+  // returne usable portion of the cache size
+  size_t usableRamCacheSize() const { return ramCacheSize; }
 };
 
 // Stats for compact cache
@@ -598,6 +625,32 @@ struct CCacheStats {
 
     return *this;
   }
+};
+
+class RateMap {
+ public:
+  static constexpr std::chrono::seconds kRateInterval{60};
+
+  // Update stat with the newest count and compute the latest delta.
+  void updateDelta(const std::string& name, uint64_t value);
+
+  // Only update stat with the newest count. Do not compute delta.
+  void updateCount(const std::string& name, uint64_t value);
+
+  // Return latest delta associated with the stat.
+  uint64_t getDelta(const std::string& name) const;
+
+  // Update stats via callback.
+  // Each stat name will be suffixed with ".<aggregationInterval>".
+  void exportStats(std::chrono::seconds aggregationInterval,
+                   std::function<void(folly::StringPiece, uint64_t)> cb);
+
+ private:
+  folly::F14FastMap<std::string, uint64_t> count_;
+  folly::F14FastMap<std::string, uint64_t> delta_;
+
+  // Internal count map for generating deltas
+  folly::F14FastMap<std::string, uint64_t> internalCount_;
 };
 
 // Types of background workers

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -80,14 +80,9 @@ void PieceWiseReplayGenerator::getReqFromTrace() {
   auto totalFieldCount =
       partialFieldCount + config_.replayGeneratorConfig.numExtraFields;
   while (true) {
-    if (!std::getline(infile_, line)) {
-      if (repeatTraceReplay_) {
-        XLOG_EVERY_MS(
-            INFO, 100'000,
-            "Reached the end of trace file. Restarting from beginning.");
-        resetTraceFileToBeginning();
-        continue;
-      }
+    try {
+      traceStream_.getline(line);
+    } catch (const cachelib::cachebench::EndOfTrace& e) {
       isEndOfFile_.store(true, std::memory_order_relaxed);
       break;
     }
@@ -95,10 +90,11 @@ void PieceWiseReplayGenerator::getReqFromTrace() {
 
     try {
       std::vector<folly::StringPiece> fields;
-      folly::split(",", line, fields);
-      if (fields.size() != totalFieldCount &&
-          // TODO: remove this after legacy data phased out.
-          fields.size() + 1 != totalFieldCount) {
+      folly::split(',', line, fields);
+
+      // TODO: remove this after legacy data phased out.
+      if (fields.size() > totalFieldCount ||
+          fields.size() < totalFieldCount - 2) {
         invalidSamples_.inc();
         continue;
       }
@@ -239,6 +235,11 @@ void PieceWiseReplayGenerator::getReqFromTrace() {
         }
       }
 
+      const std::string itemValue =
+          fields.size() == totalFieldCount
+              ? folly::to<std::string>(fields[SampleFields::ITEM_VALUE])
+              : "";
+
       // Spin until the queue has room
       while (!activeReqQ_[shard]->write(config_.cachePieceSize,
                                         timestampSeconds,
@@ -253,7 +254,8 @@ void PieceWiseReplayGenerator::getReqFromTrace() {
                                         ttl,
                                         std::move(statsAggFields),
                                         std::move(admFeatureMap),
-                                        cacheHit)) {
+                                        cacheHit,
+                                        itemValue)) {
         if (shouldShutdown()) {
           XLOG(INFO) << "Forced to stop, terminate reading trace file!";
           return;
@@ -275,16 +277,6 @@ void PieceWiseReplayGenerator::getReqFromTrace() {
       XLOG(ERR) << "Processing line: " << line
                 << ", causes exception: " << e.what();
     }
-  }
-}
-
-uint32_t PieceWiseReplayGenerator::getShard(folly::StringPiece key) {
-  if (mode_ == ReplayGeneratorConfig::SerializeMode::strict) {
-    return folly::hash::SpookyHashV2::Hash32(key.begin(), key.size(), 0) %
-           numShards_;
-  } else {
-    // TODO: implement the relaxed mode
-    return folly::Random::rand32(numShards_);
   }
 }
 

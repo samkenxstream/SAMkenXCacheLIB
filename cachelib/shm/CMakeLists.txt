@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ add_library (cachelib_shm
 add_dependencies(cachelib_shm thrift_generated_files)
 target_link_libraries(cachelib_shm PUBLIC
   cachelib_common
+  numa
 )
 
 install(TARGETS cachelib_shm

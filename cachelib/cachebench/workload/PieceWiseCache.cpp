@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -340,7 +340,8 @@ PieceWiseReqWrapper::PieceWiseReqWrapper(
     uint32_t ttl,
     std::vector<std::string>&& statsAggFieldV,
     std::unordered_map<std::string, std::string>&& admFeatureM,
-    folly::Optional<bool> isHit)
+    folly::Optional<bool> isHit,
+    const std::string& itemValue = "")
     : baseKey(GenericPieces::escapeCacheKey(key.str())),
       pieceKey(baseKey),
       sizes(1),
@@ -350,7 +351,8 @@ PieceWiseReqWrapper::PieceWiseReqWrapper(
           opType,
           ttl,
           reqId,
-          admFeatureM),
+          admFeatureM,
+          itemValue),
       requestRange(rangeStart, rangeEnd),
       headerSize(responseHeaderSize),
       fullObjectSize(fullContentSize),
@@ -389,7 +391,8 @@ PieceWiseReqWrapper::PieceWiseReqWrapper(const PieceWiseReqWrapper& other)
           other.req.getOp(),
           other.req.ttlSecs,
           other.req.requestId.value(),
-          other.req.admFeatureMap),
+          other.req.admFeatureMap,
+          other.req.itemValue),
       requestRange(other.requestRange),
       isHeaderPiece(other.isHeaderPiece),
       headerSize(other.headerSize),

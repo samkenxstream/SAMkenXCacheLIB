@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -46,7 +46,7 @@ class PersistorWorker : public PeriodicWorker {
     XDCHECK(serializationCallback_);
     WorkUnit workUnit;
     uint64_t failedToSerializeKeysCount = 0;
-    while (queue_.read(workUnit) && !breakOut_.load()) {
+    while (!breakOut_.load() && queue_.read(workUnit)) {
       for (auto& [handle, poolId] : workUnit) {
         // no need to persist if item is already expired
         if (handle->isExpired()) {
@@ -72,8 +72,8 @@ class PersistorWorker : public PeriodicWorker {
         recordWriter_->writeRecord(Serializer::serializeToIOBuf(item));
       }
     }
-    XLOG(INFO) << "Failed to Serialize Key Count = "
-               << failedToSerializeKeysCount;
+    XLOG_EVERY_MS(INFO, 10000)
+        << "Failed to Serialize Key Count = " << failedToSerializeKeysCount;
   }
 
   void setBreakOut() { breakOut_ = true; }
@@ -104,7 +104,7 @@ class ObjectCachePersistor {
         queuBatchSize_(queueBatchSize) {
     for (size_t i = 0; i < numOfThreads; i++) {
       auto file = folly::File(fileName + "_" + folly::to<std::string>(i),
-                              O_WRONLY | O_CREAT);
+                              O_WRONLY | O_CREAT | O_TRUNC);
       if (file) {
         auto rw = navy::createFileRecordWriter(std::move(file));
         persistors_.emplace_back(std::make_shared<PersistorWorkerObj>(
@@ -153,6 +153,7 @@ class ObjectCachePersistor {
           break;
         }
       }
+      workUnit.clear();
     }
 
     // Wait until all items in MPMC are consumed and persisted
@@ -195,7 +196,7 @@ class RestorerWorker : public PeriodicWorker {
   void work() override {
     XDCHECK(deserializationCallback_);
     uint32_t currentTime = static_cast<uint32_t>(util::getCurrentTimeSec());
-    while (!recordReader_->isEnd() && !breakOut_.load()) {
+    while (!breakOut_.load() && !recordReader_->isEnd()) {
       auto iobuf = recordReader_->readRecord();
       XDCHECK(iobuf);
       Deserializer deserializer(iobuf->data(), iobuf->data() + iobuf->length());

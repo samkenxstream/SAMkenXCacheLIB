@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -53,7 +53,8 @@ class FreeMemStrategy : public RebalanceStrategy {
   explicit FreeMemStrategy(Config config = {});
 
   RebalanceContext pickVictimAndReceiverImpl(const CacheBase& cache,
-                                             PoolId pid) final;
+                                             PoolId pid,
+                                             const PoolStats& poolStats) final;
 
  private:
   const Config config_;

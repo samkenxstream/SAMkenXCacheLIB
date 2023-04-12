@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -212,6 +212,19 @@ class MemoryDevice final : public Device {
 };
 } // namespace
 
+bool Device::write(uint64_t offset, BufferView view) {
+  if (encryptor_) {
+    auto writeBuffer = makeIOBuffer(view.size());
+    writeBuffer.copyFrom(0, view);
+    return write(offset, std::move(writeBuffer));
+  }
+
+  const auto size = view.size();
+  XDCHECK_LE(offset + size, size_);
+  const uint8_t* data = reinterpret_cast<const uint8_t*>(view.data());
+  return writeInternal(offset, data, size);
+}
+
 bool Device::write(uint64_t offset, Buffer buffer) {
   const auto size = buffer.size();
   XDCHECK_LE(offset + buffer.size(), size_);
@@ -225,7 +238,10 @@ bool Device::write(uint64_t offset, Buffer buffer) {
       return false;
     }
   }
+  return writeInternal(offset, data, size);
+}
 
+bool Device::writeInternal(uint64_t offset, const uint8_t* data, size_t size) {
   auto remainingSize = size;
   auto maxWriteSize = (maxWriteSize_ == 0) ? remainingSize : maxWriteSize_;
   bool result = true;
@@ -320,16 +336,22 @@ bool Device::read(uint64_t offset, uint32_t size, void* value) {
 }
 
 void Device::getCounters(const CounterVisitor& visitor) const {
-  visitor("navy_device_bytes_written", getBytesWritten());
-  visitor("navy_device_bytes_read", getBytesRead());
+  visitor("navy_device_bytes_written", getBytesWritten(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_device_bytes_read", getBytesRead(),
+          CounterVisitor::CounterType::RATE);
   readLatencyEstimator_.visitQuantileEstimator(visitor,
                                                "navy_device_read_latency_us");
   writeLatencyEstimator_.visitQuantileEstimator(visitor,
                                                 "navy_device_write_latency_us");
-  visitor("navy_device_read_errors", readIOErrors_.get());
-  visitor("navy_device_write_errors", writeIOErrors_.get());
-  visitor("navy_device_encryption_errors", encryptionErrors_.get());
-  visitor("navy_device_decryption_errors", decryptionErrors_.get());
+  visitor("navy_device_read_errors", readIOErrors_.get(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_device_write_errors", writeIOErrors_.get(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_device_encryption_errors", encryptionErrors_.get(),
+          CounterVisitor::CounterType::RATE);
+  visitor("navy_device_decryption_errors", decryptionErrors_.get(),
+          CounterVisitor::CounterType::RATE);
 }
 
 std::unique_ptr<Device> createFileDevice(

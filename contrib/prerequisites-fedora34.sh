@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,4 +19,5 @@ sudo dnf -y install bison flex patch bzip2 cmake \
   double-conversion double-conversion-devel make g++ \
   boost-devel libevent-devel openssl-devel libunwind-devel \
   zlib-devel lz4-devel xz-devel bzip2-devel \
-  jemalloc-devel snappy-devel libsodium-devel libdwarf-devel libaio-devel
+  jemalloc-devel snappy-devel libsodium-devel libdwarf-devel libaio-devel \
+  numactl-devel

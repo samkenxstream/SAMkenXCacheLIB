@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -182,16 +182,64 @@ typename NvmCache<C>::WriteHandle NvmCache<C>::find(HashedKey hk) {
   XDCHECK(ctx);
   auto guard = folly::makeGuard([hk, this]() { removeFromFillMap(hk); });
 
-  auto status = navyCache_->lookupAsync(
+  navyCache_->lookupAsync(
       HashedKey::precomputed(ctx->getKey(), hk.keyHash()),
       [this, ctx](navy::Status s, HashedKey k, navy::Buffer v) {
         this->onGetComplete(*ctx, s, k, v.view());
       });
-
-  XDCHECK_EQ(status, navy::Status::Ok);
-
   guard.dismiss();
   return hdl;
+}
+
+template <typename C>
+bool NvmCache<C>::couldExistFast(HashedKey hk) {
+  if (!isEnabled()) {
+    return false;
+  }
+
+  auto shard = getShardForKey(hk);
+  // invalidateToken any inflight puts for the same key since we are filling
+  // from nvmcache.
+  inflightPuts_[shard].invalidateToken(hk.key());
+
+  auto lock = getFillLockForShard(shard);
+  // do not use the Cache::find() since that will call back into us.
+  auto hdl = CacheAPIWrapperForNvm<C>::findInternal(cache_, hk.key());
+  if (hdl != nullptr) {
+    if (hdl->isExpired()) {
+      return false;
+    }
+    return true;
+  }
+
+  auto& fillMap = getFillMapForShard(shard);
+  auto it = fillMap.find(hk.key());
+  // we use async apis for nvmcache operations into navy. async apis for
+  // lookups incur additional overheads and thread hops. However, navy can
+  // quickly answer negative lookups through a synchronous api. So we try to
+  // quickly validate this, if possible, before doing the heavier async
+  // lookup.
+  //
+  // since this is a synchronous api, navy would not guarantee any
+  // particular ordering semantic with other concurrent requests to same
+  // key. we need to ensure there are no asynchronous api requests for the
+  // same key. First, if there are already concurrent get requests, we
+  // simply add ourselves to the list of waiters for that get. If there are
+  // concurrent put requests already enqueued, executing this synchronous
+  // api can read partial state. Hence the result can not be trusted. If
+  // there are concurrent delete requests enqueued, we might get false
+  // positives that key is present. That is okay since it is a loss of
+  // performance and not correctness.
+  //
+  // For concurrent put, if it is already enqueued, its put context already
+  // exists. If it is not enqueued yet (in-flight) the above invalidateToken
+  // will prevent the put from being enqueued.
+  if (config_.enableFastNegativeLookups && it == fillMap.end() &&
+      !putContexts_[shard].hasContexts() && !navyCache_->couldExist(hk)) {
+    return false;
+  }
+
+  return true;
 }
 
 template <typename C>
@@ -206,7 +254,7 @@ typename NvmCache<C>::WriteHandle NvmCache<C>::peek(folly::StringPiece key) {
 
   // no need for fill lock or inspecting the state of other concurrent
   // operations since we only want to check the state for debugging purposes.
-  auto status = navyCache_->lookupAsync(
+  navyCache_->lookupAsync(
       HashedKey{key}, [&, this](navy::Status st, HashedKey, navy::Buffer v) {
         if (st != navy::Status::NotFound) {
           auto nvmItem = reinterpret_cast<const NvmItem*>(v.data());
@@ -214,13 +262,11 @@ typename NvmCache<C>::WriteHandle NvmCache<C>::peek(folly::StringPiece key) {
         }
         b.post();
       });
-  if (status != navy::Status::Ok) {
-    return hdl;
-  }
   b.wait();
   return hdl;
 }
 
+// invalidate any inflight lookup that is on flight since we are evicting it.
 template <typename C>
 void NvmCache<C>::evictCB(HashedKey hk,
                           navy::BufferView value,
@@ -330,8 +376,15 @@ void NvmCache<C>::evictCB(HashedKey hk,
     }
   }
 
+  if (!needDestructor) {
+    return;
+  }
+
+  if (event != cachelib::navy::DestructorEvent::Removed) {
+    stats().numCacheEvictions.inc();
+  }
   // ItemDestructor
-  if (itemDestructor_ && needDestructor) {
+  if (itemDestructor_) {
     // create the item on heap instead of memory pool to avoid allocation
     // failure and evictions from cache for a temporary item.
     auto iobuf = createItemAsIOBuf(hk.key(), nvmItem);
@@ -377,6 +430,10 @@ NvmCache<C>::NvmCache(C& c,
       itemDestructor_(itemDestructor) {
   navyCache_ = createNavyCache(
       config_.navyConfig,
+      [](navy::BufferView v) -> bool {
+        const auto& nvmItem = *reinterpret_cast<const NvmItem*>(v.data());
+        return nvmItem.isExpired();
+      },
       [this](HashedKey hk, navy::BufferView v, navy::DestructorEvent e) {
         this->evictCB(hk, v, e);
       },
@@ -658,18 +715,22 @@ typename NvmCache<C>::WriteHandle NvmCache<C>::createItem(
 
 template <typename C>
 std::unique_ptr<folly::IOBuf> NvmCache<C>::createItemAsIOBuf(
-    folly::StringPiece key, const NvmItem& nvmItem) {
-  const size_t numBufs = nvmItem.getNumBlobs();
+    folly::StringPiece key, const NvmItem& nvmItem, bool parentOnly) {
+  const size_t numBufs = parentOnly ? 1 : nvmItem.getNumBlobs();
   // parent item
   XDCHECK_GE(numBufs, 1u);
   const auto pBlob = nvmItem.getBlob(0);
 
   stats().numNvmAllocForItemDestructor.inc();
   std::unique_ptr<folly::IOBuf> head;
+
   try {
-    // use the original alloc size to allocate, but make sure that the usable
-    // size matches the pBlob's size
-    auto size = Item::getRequiredSize(key, pBlob.origAllocSize);
+    // Use the pBlob's actual size instead of origAllocSize
+    // because the slack space might be used if nvmcache is configured
+    // with useTruncatedAllocSize == false
+    XDCHECK_LE(pBlob.origAllocSize, pBlob.data.size());
+    auto size = Item::getRequiredSize(key, pBlob.data.size());
+
     head = folly::IOBuf::create(size);
     head->append(size);
   } catch (const std::bad_alloc&) {
@@ -682,7 +743,7 @@ std::unique_ptr<folly::IOBuf> NvmCache<C>::createItemAsIOBuf(
 
   XDCHECK_LE(pBlob.origAllocSize, item->getSize());
   XDCHECK_LE(pBlob.origAllocSize, pBlob.data.size());
-  ::memcpy(item->getMemory(), pBlob.data.data(), pBlob.origAllocSize);
+  ::memcpy(item->getMemory(), pBlob.data.data(), pBlob.data.size());
   item->markNvmClean();
   item->markNvmEvicted();
 
@@ -781,11 +842,37 @@ void NvmCache<C>::remove(HashedKey hk, DeleteTombStoneGuard tombstone) {
                                static_cast<int>(status)));
   };
 
-  auto status = navyCache_->removeAsync(
-      HashedKey::precomputed(ctx.key(), hk.keyHash()), delCleanup);
+  navyCache_->removeAsync(HashedKey::precomputed(ctx.key(), hk.keyHash()),
+                          delCleanup);
+}
+
+template <typename C>
+typename NvmCache<C>::SampleItem NvmCache<C>::getSampleItem() {
+  navy::Buffer value;
+  auto [status, keyStr] = navyCache_->getRandomAlloc(value);
   if (status != navy::Status::Ok) {
-    delCleanup(status, HashedKey::precomputed("", 0));
+    return SampleItem{true /* fromNvm */};
   }
+
+  folly::StringPiece key(keyStr);
+
+  const auto& nvmItem = *reinterpret_cast<const NvmItem*>(value.data());
+  const auto requiredSize =
+      Item::getRequiredSize(key, nvmItem.getBlob(0).origAllocSize);
+
+  const auto poolId = nvmItem.poolId();
+  auto& pool = cache_.getPool(poolId);
+  auto clsId = pool.getAllocationClassId(requiredSize);
+  auto allocSize = pool.getAllocationClass(clsId).getAllocSize();
+
+  std::shared_ptr<folly::IOBuf> iobufs =
+      createItemAsIOBuf(key, nvmItem, true /* parentOnly */);
+  if (!iobufs) {
+    return SampleItem{true /* fromNvm */};
+  }
+
+  return SampleItem(std::move(*iobufs), poolId, clsId, allocSize,
+                    true /* fromNvm */);
 }
 
 template <typename C>
@@ -808,14 +895,10 @@ void NvmCache<C>::flushPendingOps() {
 }
 
 template <typename C>
-std::unordered_map<std::string, double> NvmCache<C>::getStatsMap() const {
-  std::unordered_map<std::string, double> statsMap;
-  navyCache_->getCounters([&statsMap](folly::StringPiece key, double value) {
-    auto keyStr = key.str();
-    DCHECK_EQ(0, statsMap.count(keyStr));
-    statsMap.insert({std::move(keyStr), value});
-  });
-  statsMap["items_tracked_for_destructor"] = getNvmItemRemovedSize();
+util::StatsMap NvmCache<C>::getStatsMap() const {
+  util::StatsMap statsMap;
+  navyCache_->getCounters(statsMap.createCountVisitor());
+  statsMap.insertCount("items_tracked_for_destructor", getNvmItemRemovedSize());
   return statsMap;
 }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@
 
 #include <folly/CPortability.h>
 #include <folly/Likely.h>
+#include <folly/Random.h>
 #include <folly/ScopeGuard.h>
 #include <folly/logging/xlog.h>
 #include <folly/synchronization/SanitizeThread.h>
@@ -216,6 +217,46 @@ class CacheAllocator : public CacheBase {
 
   using EventTracker = EventInterface<Key>;
 
+  // SampleItem is a wrapper for the CacheItem which is provided as the sample
+  // for uploading to Scuba (see ItemStatsExporter). It is guaranteed that the
+  // CacheItem is accessible as long as the SampleItem is around since the
+  // internal resource (e.g., ref counts, buffer) will be managed by the iobuf
+  class SampleItem {
+   public:
+    explicit SampleItem(bool fromNvm) : fromNvm_{fromNvm} {}
+
+    SampleItem(folly::IOBuf&& iobuf, const AllocInfo& allocInfo, bool fromNvm)
+        : iobuf_{std::move(iobuf)}, allocInfo_{allocInfo}, fromNvm_{fromNvm} {}
+
+    SampleItem(folly::IOBuf&& iobuf,
+               PoolId poolId,
+               ClassId classId,
+               size_t allocSize,
+               bool fromNvm)
+        : SampleItem(std::move(iobuf),
+                     AllocInfo{poolId, classId, allocSize},
+                     fromNvm) {}
+
+    const Item* operator->() const noexcept { return get(); }
+
+    const Item& operator*() const noexcept { return *get(); }
+
+    [[nodiscard]] const Item* get() const noexcept {
+      return reinterpret_cast<const Item*>(iobuf_.data());
+    }
+
+    [[nodiscard]] bool isValid() const { return !iobuf_.empty(); }
+
+    [[nodiscard]] bool isNvmItem() const { return fromNvm_; }
+
+    [[nodiscard]] const AllocInfo& getAllocInfo() const { return allocInfo_; }
+
+   private:
+    folly::IOBuf iobuf_;
+    AllocInfo allocInfo_{};
+    bool fromNvm_ = false;
+  };
+
   // holds information about removal, used in RemoveCb
   struct RemoveCbData {
     // remove or eviction
@@ -227,6 +268,7 @@ class CacheAllocator : public CacheBase {
     // Iterator range pointing to chained allocs associated with @item
     folly::Range<ChainedItemIter> chainedAllocs;
   };
+
   struct DestructorData {
     DestructorData(DestructorContext ctx,
                    Item& it,
@@ -550,6 +592,17 @@ class CacheAllocator : public CacheBase {
   //              not exist.
   FOLLY_ALWAYS_INLINE ReadHandle peek(Key key);
 
+  // Returns true if a key is potentially in cache. There is a non-zero chance
+  // the key does not exist in cache (e.g. hash collision in NvmCache). This
+  // check is meant to be synchronous and fast as we only check DRAM cache and
+  // in-memory index for NvmCache. Similar to peek, this does not indicate to
+  // cachelib you have looked up an item (i.e. no stats bump, no eviction queue
+  // promotion, etc.)
+  //
+  // @param key   the key for lookup
+  // @return      true if the key could exist, false otherwise
+  bool couldExistFast(Key key);
+
   // Mark an item that was fetched through peek as useful. This is useful when
   // users want to look into the cache and only mark items as useful when they
   // inspect the contents of it.
@@ -660,11 +713,11 @@ class CacheAllocator : public CacheBase {
   // Get a random item from memory
   // This is useful for profiling and sampling cachelib managed memory
   //
-  // @return ReadHandle if an valid item is found
-  //
-  //         nullptr if the randomly chosen memory does not belong
-  //                 to an valid item
-  ReadHandle getSampleItem();
+  // @return Valid SampleItem if an valid item is found
+  //         Invalid SampleItem if the randomly chosen memory does not
+  //                 belong to an valid item
+  //         Should be checked with SampleItem.isValid() before use
+  SampleItem getSampleItem();
 
   // Convert a Read Handle to an IOBuf. The returned IOBuf gives a
   // read-only view to the user. The item's ownership is retained by
@@ -1059,7 +1112,7 @@ class CacheAllocator : public CacheBase {
   PoolId getPoolId(folly::StringPiece name) const noexcept;
 
   // returns the pool's name by its poolId.
-  std::string getPoolName(PoolId poolId) const {
+  std::string getPoolName(PoolId poolId) const override {
     return allocator_->getPoolName(poolId);
   }
 
@@ -1093,6 +1146,13 @@ class CacheAllocator : public CacheBase {
     return stats;
   }
 
+  // returns the pool rebalancer stats
+  RebalancerStats getRebalancerStats() const {
+    auto stats =
+        poolRebalancer_ ? poolRebalancer_->getStats() : RebalancerStats{};
+    return stats;
+  }
+
   // return the LruType of an item
   typename MMType::LruType getItemLruType(const Item& item) const;
 
@@ -1123,8 +1183,7 @@ class CacheAllocator : public CacheBase {
   CacheMemoryStats getCacheMemoryStats() const override final;
 
   // return the nvm cache stats map
-  std::unordered_map<std::string, double> getNvmCacheStatsMap()
-      const override final;
+  util::StatsMap getNvmCacheStatsMap() const override final;
 
   // return the event tracker stats map
   std::unordered_map<std::string, uint64_t> getEventTrackerStatsMap()
@@ -1256,7 +1315,7 @@ class CacheAllocator : public CacheBase {
 
  private:
   // wrapper around Item's refcount and active handle tracking
-  FOLLY_ALWAYS_INLINE void incRef(Item& it);
+  FOLLY_ALWAYS_INLINE bool incRef(Item& it);
   FOLLY_ALWAYS_INLINE RefcountWithFlags::Value decRef(Item& it);
 
   // drops the refcount and if needed, frees the allocation back to the memory
@@ -1456,7 +1515,7 @@ class CacheAllocator : public CacheBase {
   FOLLY_ALWAYS_INLINE WriteHandle findFastImpl(Key key, AccessMode mode);
 
   // Moves a regular item to a different slab. This should only be used during
-  // slab release after the item's moving bit has been set. The user supplied
+  // slab release after the item's exclusive bit has been set. The user supplied
   // callback is responsible for copying the contents and fixing the semantics
   // of chained item.
   //
@@ -1479,7 +1538,7 @@ class CacheAllocator : public CacheBase {
   folly::IOBuf convertToIOBufT(Handle& handle);
 
   // Moves a chained item to a different slab. This should only be used during
-  // slab release after the item's moving bit has been set. The user supplied
+  // slab release after the item's exclusive bit has been set. The user supplied
   // callback is responsible for copying the contents and fixing the semantics
   // of chained item.
   //
@@ -1608,7 +1667,7 @@ class CacheAllocator : public CacheBase {
   // @return An evicted item or nullptr  if there is no suitable candidate.
   Item* findEviction(PoolId pid, ClassId cid);
 
-  using EvictionIterator = typename MMContainer::Iterator;
+  using EvictionIterator = typename MMContainer::LockedIterator;
 
   // Advance the current iterator and try to evict a regular item
   //
@@ -1773,7 +1832,7 @@ class CacheAllocator : public CacheBase {
     // detection.
     folly::annotate_ignore_thread_sanitizer_guard g(__FILE__, __LINE__);
     auto slabsSkipped = allocator_->forEachAllocation(std::forward<Fn>(f));
-    stats().numSkippedSlabReleases.add(slabsSkipped);
+    stats().numReaperSkippedSlabs.add(slabsSkipped);
   }
 
   // returns true if nvmcache is enabled and we should write this item to
@@ -1816,6 +1875,7 @@ class CacheAllocator : public CacheBase {
                   std::unique_ptr<T>& worker,
                   std::chrono::seconds timeout = std::chrono::seconds{0});
 
+  ShmSegmentOpts createShmCacheOpts();
   std::unique_ptr<MemoryAllocator> createNewMemoryAllocator();
   std::unique_ptr<MemoryAllocator> restoreMemoryAllocator();
   std::unique_ptr<CCacheManager> restoreCCacheManager();
@@ -1875,12 +1935,8 @@ class CacheAllocator : public CacheBase {
   std::optional<bool> saveNvmCache();
   void saveRamCache();
 
-  static bool itemMovingPredicate(const Item& item) {
+  static bool itemExclusivePredicate(const Item& item) {
     return item.getRefCount() == 0;
-  }
-
-  static bool itemEvictionPredicate(const Item& item) {
-    return item.getRefCount() == 0 && !item.isMoving();
   }
 
   static bool itemExpiryPredicate(const Item& item) {
@@ -1935,7 +1991,7 @@ class CacheAllocator : public CacheBase {
   // on heap.
   const bool isOnShm_{false};
 
-  const Config config_{};
+  Config config_{};
 
   // Manages the temporary shared memory segment for memory allocator that
   // is not persisted when cache process exits.

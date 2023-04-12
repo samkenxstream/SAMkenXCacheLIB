@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -114,8 +114,10 @@ class BlockCacheProtoImpl final : public BlockCacheProto {
   }
 
   std::unique_ptr<Engine> create(JobScheduler& scheduler,
+                                 ExpiredCheck checkExpired,
                                  DestructorCallback cb) && {
     config_.scheduler = &scheduler;
+    config_.checkExpired = std::move(checkExpired);
     config_.destructorCb = std::move(cb);
     config_.validate();
     return std::make_unique<BlockCache>(std::move(config_));
@@ -154,7 +156,8 @@ class BigHashProtoImpl final : public BigHashProto {
     config_.destructorCb = std::move(cb);
   }
 
-  std::unique_ptr<Engine> create() && {
+  std::unique_ptr<Engine> create(ExpiredCheck checkExpired) && {
+    config_.checkExpired = std::move(checkExpired);
     if (bloomFilterEnabled_) {
       if (config_.bucketSize == 0) {
         throw std::invalid_argument{"invalid bucket size"};
@@ -170,6 +173,60 @@ class BigHashProtoImpl final : public BigHashProto {
   bool bloomFilterEnabled_{false};
   uint32_t numHashes_{};
   uint32_t hashTableBitSize_{};
+};
+
+class EnginePairProtoImpl final : public EnginePairProto {
+ public:
+  EnginePairProtoImpl() = default;
+  ~EnginePairProtoImpl() override = default;
+  EnginePairProtoImpl(EnginePairProtoImpl&& proto) noexcept {
+    bigHashProto_ = std::move(proto.bigHashProto_);
+    blockCacheProto_ = std::move(proto.blockCacheProto_);
+    smallItemMaxSize_ = proto.smallItemMaxSize_;
+  }
+
+  void setBigHash(std::unique_ptr<BigHashProto> proto,
+                  uint32_t smallItemMaxSize) override {
+    bigHashProto_ = std::move(proto);
+    smallItemMaxSize_ = smallItemMaxSize;
+  }
+
+  void setBlockCache(std::unique_ptr<BlockCacheProto> proto) override {
+    blockCacheProto_ = std::move(proto);
+  }
+
+  EnginePair create(Device* device,
+                    ExpiredCheck checkExpired,
+                    DestructorCallback destructorCb,
+                    JobScheduler& scheduler) {
+    std::unique_ptr<Engine> bh;
+
+    if (bigHashProto_) {
+      auto bhProto = dynamic_cast<BigHashProtoImpl*>(bigHashProto_.get());
+      if (bhProto != nullptr) {
+        bhProto->setDevice(device);
+        bhProto->setDestructorCb(destructorCb);
+        bh = std::move(*bhProto).create(checkExpired);
+      }
+    }
+
+    std::unique_ptr<Engine> bc;
+    if (blockCacheProto_) {
+      auto bcProto = dynamic_cast<BlockCacheProtoImpl*>(blockCacheProto_.get());
+      if (bcProto != nullptr) {
+        bcProto->setDevice(device);
+        bc = std::move(*bcProto).create(scheduler, checkExpired, destructorCb);
+      }
+    }
+
+    return EnginePair{std::move(bh), std::move(bc), smallItemMaxSize_,
+                      &scheduler};
+  }
+
+ private:
+  std::unique_ptr<BigHashProto> bigHashProto_;
+  std::unique_ptr<BlockCacheProto> blockCacheProto_;
+  uint32_t smallItemMaxSize_;
 };
 
 class CacheProtoImpl final : public CacheProto {
@@ -191,18 +248,20 @@ class CacheProtoImpl final : public CacheProto {
 
   void setMetadataSize(size_t size) override { config_.metadataSize = size; }
 
-  void setBlockCache(std::unique_ptr<BlockCacheProto> proto) override {
-    blockCacheProto_ = std::move(proto);
-  }
-
-  void setBigHash(std::unique_ptr<BigHashProto> proto,
-                  uint32_t smallItemMaxSize) override {
-    bigHashProto_ = std::move(proto);
-    config_.smallItemMaxSize = smallItemMaxSize;
+  void setExpiredCheck(ExpiredCheck checkExpired) override {
+    checkExpired_ = std::move(checkExpired);
   }
 
   void setDestructorCallback(DestructorCallback cb) override {
     destructorCb_ = std::move(cb);
+  }
+
+  void addEnginePair(std::unique_ptr<EnginePairProto> proto) override {
+    enginePairsProto_.push_back(std::move(proto));
+  }
+
+  void setEnginesSelector(NavyConfig::EnginesSelector selector) override {
+    config_.selector = std::move(selector);
   }
 
   void setRejectRandomAdmissionPolicy(const RandomAPConfig& config) override {
@@ -236,6 +295,11 @@ class CacheProtoImpl final : public CacheProto {
       apConfig.probFactorLowerBound = probFactorLowerBound;
       apConfig.probFactorUpperBound = probFactorUpperBound;
     }
+    auto fnBypass = config.getFnBypass();
+    if (fnBypass) {
+      apConfig.fnBypass = std::move(fnBypass);
+    }
+
     config_.admissionPolicy =
         std::make_unique<DynamicRandomAP>(std::move(apConfig));
   }
@@ -249,31 +313,20 @@ class CacheProtoImpl final : public CacheProto {
       throw std::invalid_argument("scheduler is not set");
     }
 
-    if (blockCacheProto_) {
-      auto bcProto = dynamic_cast<BlockCacheProtoImpl*>(blockCacheProto_.get());
-      if (bcProto != nullptr) {
-        bcProto->setDevice(config_.device.get());
-        config_.largeItemCache =
-            std::move(*bcProto).create(*config_.scheduler, destructorCb_);
-      }
-    }
-
-    if (bigHashProto_) {
-      auto bhProto = dynamic_cast<BigHashProtoImpl*>(bigHashProto_.get());
-      if (bhProto != nullptr) {
-        bhProto->setDevice(config_.device.get());
-        bhProto->setDestructorCb(destructorCb_);
-        config_.smallItemCache = std::move(*bhProto).create();
-      }
+    for (auto& p : enginePairsProto_) {
+      config_.enginePairs.push_back(
+          dynamic_cast<EnginePairProtoImpl*>(p.get())->create(
+              config_.device.get(), checkExpired_, destructorCb_,
+              *config_.scheduler));
     }
 
     return std::make_unique<Driver>(std::move(config_));
   }
 
  private:
+  ExpiredCheck checkExpired_;
   DestructorCallback destructorCb_;
-  std::unique_ptr<BlockCacheProto> blockCacheProto_;
-  std::unique_ptr<BigHashProto> bigHashProto_;
+  std::vector<std::unique_ptr<EnginePairProto>> enginePairsProto_;
   Driver::Config config_;
 };
 // Open cache file @fileName and set it size to @size.
@@ -334,6 +387,10 @@ std::unique_ptr<BlockCacheProto> createBlockCacheProto() {
 
 std::unique_ptr<BigHashProto> createBigHashProto() {
   return std::make_unique<BigHashProtoImpl>();
+}
+
+std::unique_ptr<EnginePairProto> createEnginePairProto() {
+  return std::make_unique<EnginePairProtoImpl>();
 }
 
 std::unique_ptr<CacheProto> createCacheProto() {

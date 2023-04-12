@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -50,8 +50,8 @@ class AllocatorHitStatsTest : public SlabAllocatorTestBase {
     AllocatorT alloc(config);
     const std::set<uint32_t>& allocSizes = {1024,      4 * 1024,   16 * 1024,
                                             64 * 1024, 256 * 1024, 1024 * 1024};
-    const auto poolId =
-        alloc.addPool("1", alloc.getCacheMemoryStats().cacheSize, allocSizes);
+    const auto poolId = alloc.addPool(
+        "1", alloc.getCacheMemoryStats().ramCacheSize, allocSizes);
 
     const int numItems = 10000;
 
@@ -212,7 +212,7 @@ class AllocatorHitStatsTest : public SlabAllocatorTestBase {
 
     // create an allocator worth 100 slabs.
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const auto poolSize = numBytes / 2;
     auto poolId = alloc.addPool("one", poolSize);
     auto poolId2 = alloc.addPool("two", poolSize);
@@ -246,12 +246,10 @@ class AllocatorHitStatsTest : public SlabAllocatorTestBase {
     // allocations across a set of sizes.
     std::vector<std::string> keys;
     const unsigned int nKeys = 1000;
-    unsigned int initialAllocs = 0;
     while (keys.size() != nKeys) {
       const auto keyLen = folly::Random::rand32(10, 100);
       const auto allocSize = folly::Random::rand32(100, 1024 * 1024 - 1000);
       auto str = cachelib::test_util::getRandomAsciiStr(keyLen);
-      ++initialAllocs;
       auto handle = util::allocateAccessible(alloc, poolId, str, allocSize);
       if (handle) {
         keys.push_back(str);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@
 #include <sys/mman.h>
 
 #include <atomic>
+#include <unordered_map>
 
 #include "cachelib/common/FastStats.h"
 #include "cachelib/common/Utils.h"
@@ -171,6 +172,16 @@ TEST(Util, SysctlTests) {
 }
 
 TEST(Util, MemAvailable) { EXPECT_GT(util::getMemAvailable(), 0); }
+
+TEST(Util, CounterVisitor) {
+  // Uninitialized can be called.
+  util::CounterVisitor v;
+  EXPECT_NO_THROW(v("a", 2.0));
+
+  std::unordered_map<std::string, double> ctrs;
+  util::CounterVisitor(
+      [&ctrs](folly::StringPiece k, double v) { ctrs[k.str()] = v; });
+}
 } // namespace tests
 } // namespace cachelib
 } // namespace facebook

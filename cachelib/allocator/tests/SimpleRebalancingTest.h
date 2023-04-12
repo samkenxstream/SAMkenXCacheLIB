@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,12 +34,12 @@ struct SimpleRebalanceStrategy : public RebalanceStrategy {
   SimpleRebalanceStrategy() : RebalanceStrategy(PickNothingOrTest) {}
 
  private:
-  ClassId pickVictim(const CacheBase& allocator, PoolId pid) {
-    auto poolStats = allocator.getPoolStats(pid);
+  ClassId pickVictim(const CacheBase&, PoolId, const PoolStats& poolStats) {
     ClassId cid = Slab::kInvalidClassId;
     uint64_t maxActiveAllocs = 0;
     for (size_t i = 0; i < poolStats.mpStats.acStats.size(); ++i) {
-      const auto& acStats = poolStats.mpStats.acStats[static_cast<ClassId>(i)];
+      const auto& acStats =
+          poolStats.mpStats.acStats.at(static_cast<ClassId>(i));
       if (maxActiveAllocs < acStats.activeAllocs) {
         maxActiveAllocs = acStats.activeAllocs;
         cid = static_cast<ClassId>(i);
@@ -48,13 +48,16 @@ struct SimpleRebalanceStrategy : public RebalanceStrategy {
     return cid;
   }
 
-  ClassId pickVictimImpl(const CacheBase& allocator, PoolId pid) override {
-    return pickVictim(allocator, pid);
+  ClassId pickVictimImpl(const CacheBase& allocator,
+                         PoolId pid,
+                         const PoolStats& stats) override {
+    return pickVictim(allocator, pid, stats);
   }
 
   RebalanceContext pickVictimAndReceiverImpl(const CacheBase& allocator,
-                                             PoolId pid) override {
-    return {pickVictim(allocator, pid), Slab::kInvalidClassId};
+                                             PoolId pid,
+                                             const PoolStats& stats) override {
+    return {pickVictim(allocator, pid, stats), Slab::kInvalidClassId};
   }
 };
 
@@ -77,7 +80,7 @@ class SimpleRebalanceTest : public testing::Test {
     config.setCacheSize(10 * Slab::kSize);
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     auto poolId = alloc.addPool("foobar", numBytes);
 
     std::vector<typename AllocatorT::WriteHandle> handles;
@@ -130,7 +133,7 @@ class SimpleRebalanceTest : public testing::Test {
     config.setCacheSize(20 * Slab::kSize);
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const unsigned int numPools = 5;
     std::vector<PoolId> pidList;
     for (unsigned int i = 0; i < numPools; ++i) {

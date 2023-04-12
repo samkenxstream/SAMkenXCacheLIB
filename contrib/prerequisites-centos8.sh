@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -57,7 +57,8 @@ sudo dnf --enablerepo="$POWERTOOLS_REPO" install -y \
   libsodium-static \
   libdwarf-static \
   boost-static \
-  double-conversion-static
+  double-conversion-static \
+  numactl-devel
 
 #Do not install these from OS packages - they are typically outdated.
 #gflags-devel \

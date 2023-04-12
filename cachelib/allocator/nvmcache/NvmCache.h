@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -61,6 +61,7 @@ class NvmCache {
   using ChainedItemIter = typename C::ChainedItemIter;
   using ItemDestructor = typename C::ItemDestructor;
   using DestructorData = typename C::DestructorData;
+  using SampleItem = typename C::SampleItem;
 
   // Context passed in encodeCb or decodeCb. If the item has children,
   // they are passed in the form of a folly::Range.
@@ -110,7 +111,7 @@ class NvmCache {
 
     // when enabled, nvmcache will attempt to resolve misses without incurring
     // thread hops by using synchronous methods.
-    bool enableFastNegativeLookups{false};
+    bool enableFastNegativeLookups{true};
 
     // serialize the config for debugging purposes
     std::map<std::string, std::string> serialize() const;
@@ -135,6 +136,15 @@ class NvmCache {
   // @param key         key to lookup
   // @return            WriteHandle
   WriteHandle find(HashedKey key);
+
+  // Returns true if a key is potentially in cache. There is a non-zero chance
+  // the key does not exist in cache (e.g. hash collision in NvmCache). This
+  // check is meant to be synchronous and fast as we only check DRAM cache and
+  // in-memory index for NvmCache.
+  //
+  // @param key   the key for lookup
+  // @return      true if the key could exist, false otherwise
+  bool couldExistFast(HashedKey key);
 
   // Try to mark the key as in process of being evicted from RAM to NVM.
   // This is used to maintain the consistency between the RAM cache and
@@ -188,6 +198,8 @@ class NvmCache {
   //            cache and is temporary.
   WriteHandle peek(folly::StringPiece key);
 
+  SampleItem getSampleItem();
+
   // safely shut down the cache. must be called after stopping all concurrent
   // access to cache. using nvmcache after this will result in no-op.
   // Returns true if shutdown was performed properly, false otherwise.
@@ -198,9 +210,13 @@ class NvmCache {
   void flushPendingOps();
 
   // Obtain stats in a <string -> double> representation.
-  std::unordered_map<std::string, double> getStatsMap() const;
+  util::StatsMap getStatsMap() const;
 
+  // returns the size of the NVM device
   size_t getSize() const noexcept { return navyCache_->getSize(); }
+
+  // returns the size of the NVM space used for caching
+  size_t getUsableSize() const noexcept { return navyCache_->getUsableSize(); }
 
   bool updateMaxRateForDynamicRandomAP(uint64_t maxRate) {
     return navyCache_->updateMaxRateForDynamicRandomAP(maxRate);
@@ -254,11 +270,13 @@ class NvmCache {
   // chained IOBufs will be created.
   // @param key   key for the dipper item
   // @param nvmItem contents for the key
+  // @param parentOnly create item and IOBuf only for the parent item
   //
   // @return an IOBuf allocated for the item and initialized the memory to Item
   //          based on the NvmItem
   std::unique_ptr<folly::IOBuf> createItemAsIOBuf(folly::StringPiece key,
-                                                  const NvmItem& dItem);
+                                                  const NvmItem& nvmItem,
+                                                  bool parentOnly = false);
   // Returns an iterator to the item's chained IOBufs. The order of
   // iteration on the item will be LIFO of the addChainedItem calls.
   // This is only used when we have to create cache items on heap (IOBuf) for
@@ -350,8 +368,17 @@ class NvmCache {
   // Erase entry for the ctx from the fill map
   // @param     ctx   ctx to erase
   void removeFromFillMap(HashedKey hk) {
-    auto lock = getFillLock(hk);
-    getFillMap(hk).erase(hk.key());
+    std::unique_ptr<GetCtx> to_delete;
+    {
+      auto lock = getFillLock(hk);
+      auto& map = getFillMap(hk);
+      auto it = map.find(hk.key());
+      if (it == map.end()) {
+        return;
+      }
+      to_delete = std::move(it->second);
+      map.erase(it);
+    }
   }
 
   // Erase entry for the ctx from the fill map

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -98,7 +98,7 @@ class SimplePoolOptimizationTest : public testing::Test {
     const auto numItems = 100;
 
     AllocatorT alloc(config);
-    const size_t numBytes = alloc.getCacheMemoryStats().cacheSize;
+    const size_t numBytes = alloc.getCacheMemoryStats().ramCacheSize;
     const size_t initialPoolSize = numBytes / 5;
     auto pid0 = alloc.addPool("pool-0", initialPoolSize);
     auto pid1 = alloc.addPool("pool-1", initialPoolSize);

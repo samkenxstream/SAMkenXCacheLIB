@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,6 +35,7 @@ add_library (cachelib_navy
   common/SizeDistribution.cpp
   common/Types.cpp
   driver/Driver.cpp
+  engine/EnginePair.cpp
   Factory.cpp
   scheduler/ThreadPoolJobScheduler.cpp
   scheduler/ThreadPoolJobQueue.cpp

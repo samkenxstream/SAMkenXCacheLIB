@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <folly/Random.h>
 #include <folly/container/F14Map.h>
 
 #include <cassert>
@@ -89,6 +90,11 @@ class RegionManager {
   RegionManager(const RegionManager&) = delete;
   RegionManager& operator=(const RegionManager&) = delete;
 
+  // return the size of usable space
+  uint64_t getSize() const {
+    return static_cast<uint64_t>(numRegions_) * regionSize_;
+  }
+
   // Gets a region from a valid region ID.
   Region& getRegion(RegionId rid) {
     XDCHECK(rid.valid());
@@ -101,6 +107,9 @@ class RegionManager {
     return *regions_[rid.index()];
   }
 
+  const RegionId getRandomRegion() const {
+    return RegionId{folly::Random::rand32(0, numRegions_)};
+  }
   // Flushes the in memory buffer attached to a region in either async or
   // sync mode.
   // In async mode, a flush job will be added to a job scheduler;
@@ -231,7 +240,7 @@ class RegionManager {
 
   // Tries to get a free region first, otherwise evicts one and schedules region
   // cleanup job (which will add the region to the clean list).
-  JobExitCode startReclaim();
+  void startReclaim();
 
   // Releases a region that was evicted during region reclamation.
   //
@@ -249,7 +258,7 @@ class RegionManager {
     return baseOffset_ + toAbsolute(addr).offset();
   }
 
-  bool deviceWrite(RelAddress addr, Buffer buf);
+  bool deviceWrite(RelAddress addr, BufferView buf);
 
   bool isValidIORange(uint32_t offset, uint32_t size) const;
   OpenStatus assignBufferToRegion(RegionId rid);

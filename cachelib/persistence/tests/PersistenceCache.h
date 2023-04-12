@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,8 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-// Copyright 2004-present Facebook. All Rights Reserved.
 
 #include <folly/Random.h>
 #include <gtest/gtest.h>
@@ -78,7 +76,7 @@ class PersistenceCache {
     for (uint32_t i = 0; i < numPools; ++i) {
       pools.push_back(
           cache.addPool(folly::sformat("pool_{}", i),
-                        cache.getCacheMemoryStats().cacheSize / numPools));
+                        cache.getCacheMemoryStats().ramCacheSize / numPools));
     }
 
     for (uint32_t i = 0; i < items.size(); ++i) {
@@ -215,7 +213,7 @@ class PersistenceCache {
  public:
   const uint32_t kNumKeys = 1024 * 1024;    // 1 million
   const size_t kCacheSize = 100 * kNumKeys; // 100MB
-  const size_t kCapacity = 4 * kCacheSize;  // 400MB
+  const size_t kCapacity = 5 * kCacheSize;  // 500MB
 
   std::unique_ptr<folly::IOBuf> buffer_;
   std::string cacheDir_;

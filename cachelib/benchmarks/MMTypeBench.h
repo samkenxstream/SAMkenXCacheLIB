@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -203,10 +203,11 @@ void MMTypeBench<MMType>::benchRemoveIterator(unsigned int numNodes) {
   //
   // no need of iter++ since remove will do that.
   for (unsigned int deleted = 0; deleted < numNodes; deleted++) {
-    auto iter = c->getEvictionIterator();
-    if (iter) {
-      c->remove(iter);
-    }
+    c->withEvictionIterator([this](auto&& iter) {
+      if (iter) {
+        c->remove(iter);
+      }
+    });
   }
 }
 

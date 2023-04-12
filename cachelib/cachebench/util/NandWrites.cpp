@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -121,11 +121,11 @@ std::vector<std::string> getBytesWrittenLine(
   // /ritten/, so that's what we do here. We just use the first matching
   // line.
   std::vector<folly::StringPiece> lines;
-  folly::split("\n", out, lines, true /* ignoreEmpty */);
+  folly::split('\n', out, lines, true /* ignoreEmpty */);
   for (const auto& line : lines) {
     if (line.find("ritten") != std::string::npos) {
       std::vector<std::string> fields;
-      folly::split(" ", line, fields, true /* ignoreEmpty */);
+      folly::split(' ', line, fields, true /* ignoreEmpty */);
       return fields;
     }
   }
@@ -338,18 +338,15 @@ std::optional<uint64_t> micronWriteBytes(
       1 /* factor */);
 }
 
-// I don't have access to hosts with Liteon, or SKHMS flash drives that I
-// can use to test this code, so I've left these functions commented out for
-// now.
-//
-// uint64_t skhmsWriteBytes(const folly::StringPiece& device) {
-//   // For SKHMS, the output is in 512 byte pages.
-//   return getWriteCount(device, {"skhms", "vs-skhms-smart-log"}, 4) * 512;
-// }
-
-std::optional<uint64_t> notImplemented(const std::string& vendorName) {
-  throw std::invalid_argument(
-      folly::sformat("Function not implemented for vendor {}", vendorName));
+std::optional<uint64_t> skhmsWriteBytes(
+    const std::shared_ptr<ProcessFactory>& processFactory,
+    const folly::StringPiece nvmePath,
+    const folly::StringPiece devicePath) {
+  return getBytesWritten(processFactory,
+                         nvmePath,
+                         {"skhms", "vs-nand-stats", devicePath.str()},
+                         7 /* field num */,
+                         1 /* factor */);
 }
 
 // Gets the output of `nvme list` for the given device.
@@ -396,12 +393,14 @@ uint64_t nandWriteBytes(const folly::StringPiece& deviceName,
   }
   folly::toLowerAscii(modelNumber.value());
 
-  static const std::map<std::string, std::function<std::optional<uint64_t>(
-                                         const std::shared_ptr<ProcessFactory>&,
-                                         const folly::StringPiece&,
-                                         const folly::StringPiece&)>>
+  static const std::map<std::string,
+                        std::function<std::optional<uint64_t>(
+                            const std::shared_ptr<ProcessFactory>&,
+                            const folly::StringPiece&,
+                            const folly::StringPiece&)>>
       vendorMap{{"samsung", samsungWriteBytes},
                 {"mz1lb960hbjr-", samsungWriteBytes},
+                {"mzol23t8hcls-", samsungWriteBytes},
                 // The Samsung PM983a doesn't include Samsung in the model
                 // number at this time, but it's a Samsung device.
                 {"liteon", liteonWriteBytes},
@@ -411,13 +410,12 @@ uint64_t nandWriteBytes(const folly::StringPiece& deviceName,
                 // The Seagate XM1441 doesn't include SEAGATE in the model
                 // number, but it's a Segate device.
                 {"xm1441-", seagateWriteBytes},
-                {"skhms", [](const auto&, const auto&,
-                             const auto&) { return notImplemented("SKHMS"); }},
                 {"toshiba", toshibaWriteBytes},
                 {"wus4bb019d4m9e7", wdcWriteBytes},
                 {"wus4bb019djese7", wdcWriteBytes},
                 {"wus4bb038djese7", wdcWriteBytes},
-                {"micron", micronWriteBytes}};
+                {"micron", micronWriteBytes},
+                {"hfs512gde9x083n", skhmsWriteBytes}};
   for (const auto& [vendor, func] : vendorMap) {
     XLOG(DBG) << "Looking for vendor " << vendor << " in device model string \""
               << modelNumber.value() << "\".";

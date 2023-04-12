@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,11 +23,13 @@
 
 #include "cachelib/allocator/nvmcache/NavyConfig.h"
 #include "cachelib/common/Hash.h"
+#include "cachelib/common/Utils.h"
 #include "cachelib/navy/block_cache/BlockCache.h"
 #include "cachelib/navy/block_cache/HitsReinsertionPolicy.h"
 #include "cachelib/navy/block_cache/tests/TestHelpers.h"
 #include "cachelib/navy/common/Buffer.h"
 #include "cachelib/navy/common/Hash.h"
+#include "cachelib/navy/common/Utils.h"
 #include "cachelib/navy/driver/Driver.h"
 #include "cachelib/navy/testing/BufferGen.h"
 #include "cachelib/navy/testing/Callbacks.h"
@@ -86,7 +88,8 @@ std::unique_ptr<Driver> makeDriver(std::unique_ptr<Engine> largeItemCache,
                                    std::unique_ptr<Device> device = nullptr,
                                    size_t metadataSize = 0) {
   Driver::Config config;
-  config.largeItemCache = std::move(largeItemCache);
+  config.enginePairs.push_back(
+      {nullptr, std::move(largeItemCache), 0, scheduler.get()});
   config.scheduler = std::move(scheduler);
   config.metadataSize = metadataSize;
   config.device = std::move(device);
@@ -197,11 +200,14 @@ TEST(BlockCache, InsertLookup) {
     driver->flush();
     Buffer value;
     EXPECT_EQ(Status::Ok, driver->lookup(e.key(), value));
-    driver->getCounters([](folly::StringPiece name, double count) {
-      if (name == "navy_bc_lookups") {
+
+    driver->getCounters({[](folly::StringPiece name, double count,
+                            CounterVisitor::CounterType type) {
+      if (name == "navy_bc_lookups" &&
+          type == CounterVisitor::CounterType::RATE) {
         EXPECT_EQ(1, count);
       }
-    });
+    }});
 
     EXPECT_EQ(e.value(), value.view());
     log.push_back(std::move(e));
@@ -311,27 +317,22 @@ TEST(BlockCache, AsyncCallbacks) {
   MockLookupCB cbLookup;
   EXPECT_CALL(cbLookup, call(Status::Ok, makeHK("key"), makeView("value")));
   EXPECT_CALL(cbLookup, call(Status::NotFound, makeHK("cat"), BufferView{}));
-  EXPECT_EQ(Status::Ok,
-            driver->lookupAsync(
-                makeHK("key"),
-                [&cbLookup](Status status, HashedKey key, Buffer value) {
-                  cbLookup.call(status, key, value.view());
-                }));
-  EXPECT_EQ(Status::Ok,
-            driver->lookupAsync(
-                makeHK("cat"),
-                [&cbLookup](Status status, HashedKey key, Buffer value) {
-                  cbLookup.call(status, key, value.view());
-                }));
+  driver->lookupAsync(makeHK("key"),
+                      [&cbLookup](Status status, HashedKey key, Buffer value) {
+                        cbLookup.call(status, key, value.view());
+                      });
+
+  driver->lookupAsync(makeHK("cat"),
+                      [&cbLookup](Status status, HashedKey key, Buffer value) {
+                        cbLookup.call(status, key, value.view());
+                      });
   driver->flush();
 
   MockRemoveCB cbRemove;
   EXPECT_CALL(cbRemove, call(Status::Ok, makeHK("key")));
   EXPECT_CALL(cbRemove, call(Status::NotFound, makeHK("cat")));
-  EXPECT_EQ(Status::Ok,
-            driver->removeAsync(makeHK("key"), toCallback(cbRemove)));
-  EXPECT_EQ(Status::Ok,
-            driver->removeAsync(makeHK("cat"), toCallback(cbRemove)));
+  driver->removeAsync(makeHK("key"), toCallback(cbRemove));
+  driver->removeAsync(makeHK("cat"), toCallback(cbRemove));
   driver->flush();
 }
 
@@ -383,13 +384,15 @@ TEST(BlockCache, PreciseRemove) {
     Buffer value;
     // Behavior: old "key" can remove the entry "key"+"abc": "value".
     EXPECT_EQ(Status::Ok, collision.driver->remove(makeHK("key")));
-    collision.driver->getCounters([](folly::StringPiece name, double count) {
+    collision.driver->getCounters({[](folly::StringPiece name, double count,
+                                      CounterVisitor::CounterType type) {
       // The counter is not populated because preciseRemove_ and item
       // destructors are not triggered.
-      if (name == "navy_bc_remove_attempt_collisions") {
+      if (name == "navy_bc_remove_attempt_collisions" &&
+          type == CounterVisitor::CounterType::RATE) {
         EXPECT_EQ(0, count);
       }
-    });
+    }});
   }
 
   {
@@ -400,12 +403,14 @@ TEST(BlockCache, PreciseRemove) {
     Buffer value;
     // Behavior: old "key" can not remove the entry "key"+"abc": "value"
     EXPECT_EQ(Status::NotFound, collision.driver->remove(makeHK("key")));
-    collision.driver->getCounters([](folly::StringPiece name, double count) {
+    collision.driver->getCounters({[](folly::StringPiece name, double count,
+                                      CounterVisitor::CounterType type) {
       // The counter is populated
-      if (name == "navy_bc_remove_attempt_collisions") {
+      if (name == "navy_bc_remove_attempt_collisions" &&
+          type == CounterVisitor::CounterType::RATE) {
         EXPECT_EQ(1, count);
       }
-    });
+    }});
   }
 
   {
@@ -422,12 +427,14 @@ TEST(BlockCache, PreciseRemove) {
 
     // Behavior: old "key" can not remove the entry "key"+"abc": "value"
     EXPECT_EQ(Status::Ok, collision.driver->remove(makeHK("key")));
-    collision.driver->getCounters([](folly::StringPiece name, double count) {
+    collision.driver->getCounters({[](folly::StringPiece name, double count,
+                                      CounterVisitor::CounterType type) {
       // The counter is populated.
-      if (name == "navy_bc_remove_attempt_collisions") {
+      if (name == "navy_bc_remove_attempt_collisions" &&
+          type == CounterVisitor::CounterType::RATE) {
         EXPECT_EQ(1, count);
       }
-    });
+    }});
   }
 }
 
@@ -503,14 +510,14 @@ TEST(BlockCache, HoleStats) {
     driver->flush();
   }
 
-  driver->getCounters([](folly::StringPiece name, double count) {
+  driver->getCounters({[](folly::StringPiece name, double count) {
     if (name == "navy_bc_hole_count") {
       EXPECT_EQ(0, count);
     }
     if (name == "navy_bc_hole_bytes") {
       EXPECT_EQ(0, count);
     }
-  });
+  }});
 
   // Remove 3 entries from region 0
   EXPECT_EQ(Status::Ok, driver->remove(log[0].key()));
@@ -521,14 +528,14 @@ TEST(BlockCache, HoleStats) {
   EXPECT_EQ(Status::Ok, driver->remove(log[33].key()));
   EXPECT_EQ(Status::Ok, driver->remove(log[34].key()));
 
-  driver->getCounters([](folly::StringPiece name, double count) {
+  driver->getCounters({[](folly::StringPiece name, double count) {
     if (name == "navy_bc_hole_count") {
       EXPECT_EQ(5, count);
     }
     if (name == "navy_bc_hole_bytes") {
       EXPECT_EQ(5 * 1024, count);
     }
-  });
+  }});
 
   // lookup this entry from region 0 that will be soon reclaimed
   Buffer val;
@@ -546,8 +553,10 @@ TEST(BlockCache, HoleStats) {
 
   // Reclaiming region 0 should have bumped down the hole count to
   // 2 remaining (from region 2)
-  driver->getCounters([](folly::StringPiece name, double count) {
-    if (name == "navy_bc_reinsertions") {
+  driver->getCounters({[](folly::StringPiece name, double count,
+                          CounterVisitor::CounterType type) {
+    if (name == "navy_bc_reinsertions" &&
+        type == CounterVisitor::CounterType::RATE) {
       EXPECT_EQ(1, count);
     }
     if (name == "navy_bc_hole_count") {
@@ -556,7 +565,7 @@ TEST(BlockCache, HoleStats) {
     if (name == "navy_bc_hole_bytes") {
       EXPECT_EQ(2 * 1024, count);
     }
-  });
+  }});
 }
 
 TEST(BlockCache, ReclaimCorruption) {
@@ -615,11 +624,13 @@ TEST(BlockCache, ReclaimCorruption) {
     driver->flush();
   }
   // Verify we have one header checksum error and two value checksum errors
-  driver->getCounters([](folly::StringPiece name, double count) {
-    if (name == "navy_bc_reclaim") {
+  driver->getCounters({[](folly::StringPiece name, double count,
+                          CounterVisitor::CounterType type) {
+    if (name == "navy_bc_reclaim" &&
+        type == CounterVisitor::CounterType::RATE) {
       EXPECT_EQ(4, count);
     }
-  });
+  }});
 
   // Force reclamation on region 0 by allocating region 3. There are 4 regions
   // and the device was configured to require 1 clean region at all times
@@ -631,17 +642,21 @@ TEST(BlockCache, ReclaimCorruption) {
   driver->flush();
 
   // Verify we have one header checksum error and two value checksum errors
-  driver->getCounters([](folly::StringPiece name, double count) {
-    if (name == "navy_bc_reclaim") {
+  driver->getCounters({[](folly::StringPiece name, double count,
+                          CounterVisitor::CounterType type) {
+    if (name == "navy_bc_reclaim" &&
+        type == CounterVisitor::CounterType::RATE) {
       EXPECT_EQ(5, count);
     }
-    if (name == "navy_bc_reclaim_entry_header_checksum_errors") {
+    if (name == "navy_bc_reclaim_entry_header_checksum_errors" &&
+        type == CounterVisitor::CounterType::RATE) {
       EXPECT_EQ(1, count);
     }
-    if (name == "navy_bc_reclaim_value_checksum_errors") {
+    if (name == "navy_bc_reclaim_value_checksum_errors" &&
+        type == CounterVisitor::CounterType::RATE) {
       EXPECT_EQ(2, count);
     }
-  });
+  }});
 }
 
 TEST(BlockCache, StackAlloc) {
@@ -974,7 +989,6 @@ TEST(BlockCache, ReadRegionDuringEviction) {
   // Insert finds region is full and  puts region for tracking, resets allocator
   // and retries.
   EXPECT_TRUE(exPtr->runFirstIf("insert"));
-  EXPECT_TRUE(exPtr->runFirstIf("reclaim"));
 
   Buffer value;
 
@@ -983,7 +997,7 @@ TEST(BlockCache, ReadRegionDuringEviction) {
 
   // Eviction blocks access but reclaim will fail as there is still a reader
   // outstanding
-  EXPECT_FALSE(exPtr->runFirstIf("reclaim.evict"));
+  EXPECT_FALSE(exPtr->runFirstIf("reclaim"));
 
   std::thread lookupThread2([&driver, &log] {
     Buffer value2;
@@ -996,7 +1010,7 @@ TEST(BlockCache, ReadRegionDuringEviction) {
   EXPECT_EQ(Status::Ok, driver->remove(log[2].key()));
 
   // Reclaim still fails as the last reader is still outstanding
-  EXPECT_FALSE(exPtr->runFirstIf("reclaim.evict"));
+  EXPECT_FALSE(exPtr->runFirstIf("reclaim"));
 
   // Finish read and let evict region 0 entries
   sp.reached(1);
@@ -1130,7 +1144,7 @@ TEST(BlockCache, Reset) {
   driver->reset();
 
   // Create a new device with same expectations
-  proxyPtr->setRealDevice(setupResetTestDevice(config.cacheSize));
+  proxyPtr->setRealDevice(setupResetTestDevice(kDeviceSize));
   expectRegionsTracked(mp, {0, 1});
   resetTestRun(*driver);
 }
@@ -1214,7 +1228,6 @@ TEST(BlockCache, RegionLastOffset) {
   auto device = createMemoryDevice(kDeviceSize, nullptr /* encryption */);
   auto ex = makeJobScheduler();
   auto config = makeConfig(*ex, std::move(policy), *device);
-  config.regionSize = 15 * 1024; // so regionSize is not multiple of sizeClass
   auto engine = makeEngine(std::move(config));
   auto driver = makeDriver(std::move(engine), std::move(ex));
 
@@ -1257,7 +1270,6 @@ TEST(BlockCache, RegionLastOffsetOnReset) {
   auto device = createMemoryDevice(kDeviceSize, nullptr /* encryption */);
   auto ex = makeJobScheduler();
   auto config = makeConfig(*ex, std::move(policy), *device);
-  config.regionSize = 15 * 1024; // so regionSize is not multiple of sizeClass
   auto engine = makeEngine(std::move(config));
   auto driver = makeDriver(std::move(engine), std::move(ex));
 
@@ -1381,26 +1393,6 @@ TEST(BlockCache, Recovery) {
 }
 
 TEST(BlockCache, RecoveryWithDifferentCacheSize) {
-  // Test this is a warm roll for changing cache size, we can remove this once
-  // everyone is on V12 and beyond
-  class MockRecordWriter : public RecordWriter {
-   public:
-    explicit MockRecordWriter(folly::IOBufQueue& ioq)
-        : rw_{createMemoryRecordWriter(ioq)} {
-      ON_CALL(*this, writeRecord(_))
-          .WillByDefault(Invoke([this](std::unique_ptr<folly::IOBuf> iobuf) {
-            rw_->writeRecord(std::move(iobuf));
-          }));
-    }
-
-    MOCK_METHOD1(writeRecord, void(std::unique_ptr<folly::IOBuf>));
-
-    bool invalidate() override { return rw_->invalidate(); }
-
-   private:
-    std::unique_ptr<RecordWriter> rw_;
-  };
-
   std::vector<uint32_t> hits(4);
   size_t metadataSize = 3 * 1024 * 1024;
   auto deviceSize = metadataSize + kDeviceSize;
@@ -1409,8 +1401,6 @@ TEST(BlockCache, RecoveryWithDifferentCacheSize) {
 
   std::vector<std::string> keys;
   folly::IOBufQueue originalMetadata;
-  folly::IOBufQueue largerSizeMetadata;
-  folly::IOBufQueue largerSizeOldVersionMetadata;
   {
     auto config =
         makeConfig(*ex, std::make_unique<NiceMock<MockPolicy>>(&hits), *device);
@@ -1449,35 +1439,8 @@ TEST(BlockCache, RecoveryWithDifferentCacheSize) {
                     buffer));
     }
 
-    auto rw1 = createMemoryRecordWriter(originalMetadata);
-    engine->persist(*rw1);
-
-    // We will make sure we write a larger cache size into the record
-    MockRecordWriter rw2{largerSizeMetadata};
-    EXPECT_CALL(rw2, writeRecord(_))
-        .Times(testing::AtLeast(1))
-        .WillOnce(Invoke([&rw2](std::unique_ptr<folly::IOBuf> iobuf) {
-          Deserializer deserializer{iobuf->data(),
-                                    iobuf->data() + iobuf->length()};
-          auto c = deserializer.deserialize<serialization::BlockCacheConfig>();
-          c.cacheSize() = *c.cacheSize() + 4096;
-          serializeProto(c, rw2);
-        }));
-    engine->persist(rw2);
-
-    // We will make sure we write a larger cache size and dummy version v11
-    MockRecordWriter rw3{largerSizeOldVersionMetadata};
-    EXPECT_CALL(rw3, writeRecord(_))
-        .Times(testing::AtLeast(1))
-        .WillOnce(Invoke([&rw3](std::unique_ptr<folly::IOBuf> iobuf) {
-          Deserializer deserializer{iobuf->data(),
-                                    iobuf->data() + iobuf->length()};
-          auto c = deserializer.deserialize<serialization::BlockCacheConfig>();
-          c.version() = 11;
-          c.cacheSize() = *c.cacheSize() + 4096;
-          serializeProto(c, rw3);
-        }));
-    engine->persist(rw3);
+    auto rw = createMemoryRecordWriter(originalMetadata);
+    engine->persist(*rw);
   }
 
   // Recover with the right size
@@ -1499,37 +1462,13 @@ TEST(BlockCache, RecoveryWithDifferentCacheSize) {
     }
   }
 
-  // Recover with larger size
+  // Creat engine with larger size
   {
     auto config =
         makeConfig(*ex, std::make_unique<NiceMock<MockPolicy>>(&hits), *device);
-    // Uncomment this after BlockCache everywhere is on v12, and remove
-    // the below recover test
-    // ASSERT_THROW(makeEngine(std::move(config), metadataSize),
-    //              std::invalid_argument);
-    auto engine = makeEngine(std::move(config), metadataSize);
-    auto rr = createMemoryRecordReader(largerSizeMetadata);
-    ASSERT_FALSE(engine->recover(*rr));
-  }
-
-  // Recover with larger size but from v11 which should be a warm roll
-  // Remove this after BlockCache everywhere is on v12
-  {
-    auto config =
-        makeConfig(*ex, std::make_unique<NiceMock<MockPolicy>>(&hits), *device);
-    auto engine = makeEngine(std::move(config), metadataSize);
-    auto rr = createMemoryRecordReader(largerSizeOldVersionMetadata);
-    ASSERT_TRUE(engine->recover(*rr));
-
-    // All the keys should be present
-    for (auto& key : keys) {
-      Buffer buffer;
-      ASSERT_EQ(Status::Ok,
-                engine->lookup(
-                    makeHK(BufferView{key.size(),
-                                      reinterpret_cast<uint8_t*>(key.data())}),
-                    buffer));
-    }
+    config.cacheSize += 4096;
+    ASSERT_THROW(makeEngine(std::move(config), metadataSize),
+                 std::invalid_argument);
   }
 }
 
@@ -1643,26 +1582,26 @@ TEST(BlockCache, HoleStatsRecovery) {
   EXPECT_EQ(Status::Ok, driver->remove(log[5].key()));
   EXPECT_EQ(Status::Ok, driver->remove(log[8].key()));
 
-  CounterVisitor validationFunctor = [](folly::StringPiece name, double count) {
+  CounterVisitor validationFunctor{[](folly::StringPiece name, double count) {
     if (name == "navy_bc_hole_count") {
       EXPECT_EQ(4, count);
     }
     if (name == "navy_bc_hole_bytes") {
       EXPECT_EQ(4 * 4096, count);
     }
-  };
+  }};
 
   driver->getCounters(validationFunctor);
   driver->persist();
   driver->reset();
-  driver->getCounters([](folly::StringPiece name, double count) {
+  driver->getCounters({[](folly::StringPiece name, double count) {
     if (name == "navy_bc_hole_count") {
       EXPECT_EQ(0, count);
     }
     if (name == "navy_bc_hole_bytes") {
       EXPECT_EQ(0, count);
     }
-  });
+  }});
   EXPECT_TRUE(driver->recover());
   driver->getCounters(validationFunctor);
 }
@@ -2086,14 +2025,17 @@ TEST(BlockCache, DeviceFlushFailureSync) {
   EXPECT_EQ(Status::Ok, driver->insertAsync(e.key(), e.value(), {}));
   driver->flush();
 
-  driver->getCounters([](folly::StringPiece name, double count) {
-    if (name == "navy_bc_inmem_flush_retries") {
+  driver->getCounters({[](folly::StringPiece name, double count,
+                          CounterVisitor::CounterType type) {
+    if (name == "navy_bc_inmem_flush_retries" &&
+        type == CounterVisitor::CounterType::RATE) {
       EXPECT_EQ(kFlushRetryLimit, count);
     }
-    if (name == "navy_bc_inmem_flush_failures") {
+    if (name == "navy_bc_inmem_flush_failures" &&
+        type == CounterVisitor::CounterType::RATE) {
       EXPECT_EQ(1, count);
     }
-  });
+  }});
 }
 
 TEST(BlockCache, DeviceFlushFailureAsync) {
@@ -2117,14 +2059,17 @@ TEST(BlockCache, DeviceFlushFailureAsync) {
   EXPECT_EQ(Status::Ok, driver->insertAsync(e.key(), e.value(), {}));
   driver->flush();
 
-  driver->getCounters([](folly::StringPiece name, double count) {
-    if (name == "navy_bc_inmem_flush_retries") {
+  driver->getCounters({[](folly::StringPiece name, double count,
+                          CounterVisitor::CounterType type) {
+    if (name == "navy_bc_inmem_flush_retries" &&
+        type == CounterVisitor::CounterType::RATE) {
       EXPECT_EQ(kFlushRetryLimit * 2, count);
     }
-    if (name == "navy_bc_inmem_flush_failures") {
+    if (name == "navy_bc_inmem_flush_failures" &&
+        type == CounterVisitor::CounterType::RATE) {
       EXPECT_EQ(2, count);
     }
-  });
+  }});
 }
 
 TEST(BlockCache, testItemDestructor) {
@@ -2212,6 +2157,64 @@ TEST(BlockCache, testItemDestructor) {
   EXPECT_EQ(Status::NotFound, driver->lookup(log[5].key(), value));
 
   exPtr->finish();
+}
+
+TEST(BlockCache, RandomAlloc) {
+  std::unordered_map<std::string, CacheEntry> log;
+  SeqPoints sp;
+
+  std::vector<uint32_t> hits(4);
+  auto policy = std::make_unique<NiceMock<MockPolicy>>(&hits);
+  auto device = createMemoryDevice(kDeviceSize, nullptr /* encryption */);
+  auto ex = std::make_unique<MockJobScheduler>();
+  auto exPtr = ex.get();
+  auto config = makeConfig(*ex, std::move(policy), *device);
+  auto engine = makeEngine(std::move(config));
+  auto driver = makeDriver(std::move(engine), std::move(ex));
+
+  // We expect the first three regions to be filled
+  BufferGen bg;
+  for (size_t j = 0; j < 3; j++) {
+    for (size_t i = 0; i < 4; i++) {
+      auto key = folly::sformat("{}:{}", j, i);
+      CacheEntry e{makeHK(key.c_str()), bg.gen(3800)};
+      driver->insertAsync(e.key(), e.value(),
+                          [](Status status, HashedKey /*key */) {
+                            EXPECT_EQ(Status::Ok, status);
+                          });
+      log.emplace(key, std::move(e));
+      finishAllJobs(*exPtr);
+    }
+  }
+  driver->flush();
+
+  size_t succ_cnt = 0;
+  std::unordered_map<std::string, size_t> getCnts;
+  static constexpr size_t loopCnt = 10000;
+  for (size_t i = 0; i < loopCnt; i++) {
+    Buffer value;
+    auto [status, keyStr] = driver->getRandomAlloc(value);
+    if (status != navy::Status::Ok) {
+      continue;
+    }
+    succ_cnt++;
+    getCnts[keyStr]++;
+    auto it = log.find(keyStr);
+    EXPECT_NE(it, log.end());
+    EXPECT_EQ(it->second.value(), value.view());
+  }
+  std::vector<size_t> cnts;
+  std::transform(
+      getCnts.begin(), getCnts.end(), std::back_inserter(cnts),
+      [](const std::pair<std::string, size_t>& p) { return p.second; });
+  auto [avg, stddev] = util::getMeanDeviation(cnts);
+
+  // Expected success rate is 3 regions / 4 regions
+  // Allow margins of upto 20% for success rate and
+  // 20% for deviation of each item
+  EXPECT_GT(succ_cnt, (size_t)((double)loopCnt * 3.0 * 0.8 / 4.0));
+  EXPECT_LT(succ_cnt, (size_t)((double)loopCnt * 3.0 * 1.2 / 4.0));
+  EXPECT_LT(stddev, avg * 0.2);
 }
 } // namespace tests
 } // namespace navy

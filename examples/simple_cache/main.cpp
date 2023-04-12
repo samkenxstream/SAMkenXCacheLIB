@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,7 +39,7 @@ void initializeCache() {
       .validate(); // will throw if bad config
   gCache_ = std::make_unique<Cache>(config);
   defaultPool_ =
-      gCache_->addPool("default", gCache_->getCacheMemoryStats().cacheSize);
+      gCache_->addPool("default", gCache_->getCacheMemoryStats().ramCacheSize);
 }
 
 void destroyCache() { gCache_.reset(); }

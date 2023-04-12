@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc. and its affiliates.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -189,7 +189,7 @@ class MemoryMonitor : public PeriodicWorker {
   // @param strategy             Strategy to use to determine the allocation
   //                             class in pool to steal slabs from, for advising
   MemoryMonitor(CacheBase& cache,
-                Config config,
+                const Config& config,
                 std::shared_ptr<RebalanceStrategy> strategy);
 
   ~MemoryMonitor() override;
