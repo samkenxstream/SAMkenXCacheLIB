@@ -26,7 +26,7 @@ template <>
 struct fmt::formatter<DestructorContext> : formatter<string_view> {
   // parse is inherited from formatter<string_view>.
   template <typename FormatContext>
-  auto format(DestructorContext c, FormatContext& ctx) {
+  auto format(DestructorContext c, FormatContext& ctx) const {
     string_view name = "unknown";
     switch (c) {
     case DestructorContext::kEvictedFromRAM:
@@ -102,11 +102,12 @@ class ItemRecords {
     }
     if (record.destructCount != 0) {
       XLOGF(ERR, "unexpected destructCount {} for item {}, context {}|{}",
-            record.destructCount, item.getKey(), data.context, record.context);
+            record.destructCount, item.getKey().toString(), data.context,
+            record.context);
     }
     if (record.version != ptr->getVersion()) {
       XLOGF(ERR, "unexpected version {}|{} for item {}", record.version,
-            ptr->getVersion(), item.getKey());
+            ptr->getVersion(), item.getKey().toString());
     }
     ++record.destructCount;
 

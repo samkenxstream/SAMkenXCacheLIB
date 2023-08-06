@@ -24,6 +24,16 @@ void ObjectCacheSizeController<AllocatorT>::work() {
     return;
   }
   auto totalObjSize = objCache_.getTotalObjectSize();
+  if (objCache_.config_.fragmentationTrackingEnabled &&
+      folly::usingJEMalloc()) {
+    auto [jemallocAllocatedBytes, jemallocActiveBytes] =
+        trackJemallocMemStats();
+    // proportionally add Jemalloc external fragmentation bytes (i.e.
+    // jemallocActiveBytes - jemallocAllocatedBytes)
+    totalObjSize = static_cast<size_t>(
+        1.0 * totalObjSize / jemallocAllocatedBytes * jemallocActiveBytes);
+  }
+
   // Do the calculation only when total object size or total object number
   // achieves the threshold. This is to avoid unreliable calculation of average
   // object size when the cache is new and only has a few objects.
@@ -33,6 +43,13 @@ void ObjectCacheSizeController<AllocatorT>::work() {
                               objCache_.config_.l1EntriesLimit / 100) {
     auto averageObjSize = totalObjSize / currentNumEntries;
     auto newEntriesLimit = objCache_.config_.cacheSizeLimit / averageObjSize;
+    if (newEntriesLimit > objCache_.config_.l1EntriesLimit) {
+      XLOGF_EVERY_MS(INFO, 60'000,
+                     "CacheLib size-controller: cache size is bound by "
+                     "l1EntriesLimit {} desired {}",
+                     objCache_.config_.l1EntriesLimit, newEntriesLimit);
+    }
+
     // entriesLimit should never exceed the configured entries limit
     newEntriesLimit =
         std::min(newEntriesLimit, objCache_.config_.l1EntriesLimit);
@@ -59,14 +76,13 @@ void ObjectCacheSizeController<AllocatorT>::work() {
 
 template <typename AllocatorT>
 void ObjectCacheSizeController<AllocatorT>::shrinkCacheByEntriesNum(
-    int entries) {
+    size_t entries) {
   util::Throttler t(throttlerConfig_);
-  auto size = objCache_.placeholders_.size();
-  for (size_t i = size; i < size + entries; i++) {
-    auto key = objCache_.getPlaceHolderKey(i);
-    auto success = objCache_.allocatePlaceholder(key);
-    if (!success) {
-      XLOGF(ERR, "Couldn't allocate {}", key);
+  auto before = objCache_.getNumPlaceholders();
+  for (size_t i = 0; i < entries; i++) {
+    if (!objCache_.allocatePlaceholder()) {
+      XLOGF(ERR, "Couldn't allocate placeholder {}",
+            objCache_.getNumPlaceholders());
     } else {
       currentEntriesLimit_--;
     }
@@ -78,15 +94,16 @@ void ObjectCacheSizeController<AllocatorT>::shrinkCacheByEntriesNum(
       INFO, 60'000,
       "CacheLib size-controller: request to shrink cache by {} entries. "
       "Placeholders num before: {}, after: {}. currentEntriesLimit: {}",
-      entries, size, objCache_.placeholders_.size(), currentEntriesLimit_);
+      entries, before, objCache_.getNumPlaceholders(), currentEntriesLimit_);
 }
 
 template <typename AllocatorT>
 void ObjectCacheSizeController<AllocatorT>::expandCacheByEntriesNum(
-    int entries) {
+    size_t entries) {
   util::Throttler t(throttlerConfig_);
-  auto size = objCache_.placeholders_.size();
-  for (int i = 0; i < entries && !objCache_.placeholders_.empty(); i++) {
+  auto before = objCache_.getNumPlaceholders();
+  entries = std::min<size_t>(entries, before);
+  for (size_t i = 0; i < entries; i++) {
     objCache_.placeholders_.pop_back();
     currentEntriesLimit_++;
     // throttle to slow down the release speed
@@ -97,7 +114,19 @@ void ObjectCacheSizeController<AllocatorT>::expandCacheByEntriesNum(
       INFO, 60'000,
       "CacheLib size-controller: request to expand cache by {} entries. "
       "Placeholders num before: {}, after: {}. currentEntriesLimit: {}",
-      entries, size, objCache_.placeholders_.size(), currentEntriesLimit_);
+      entries, before, objCache_.getNumPlaceholders(), currentEntriesLimit_);
+}
+
+template <typename AllocatorT>
+void ObjectCacheSizeController<AllocatorT>::getCounters(
+    const util::CounterVisitor& visitor) const {
+  visitor("objcache.num_placeholders", objCache_.getNumPlaceholders());
+  if (folly::usingJEMalloc()) {
+    auto [jemallocAllocatedBytes, jemallocActiveBytes] =
+        trackJemallocMemStats();
+    visitor("objcache.jemalloc_active_bytes", jemallocActiveBytes);
+    visitor("objcache.jemalloc_allocated_bytes", jemallocAllocatedBytes);
+  }
 }
 
 template <typename AllocatorT>

@@ -35,6 +35,7 @@ add_library (cachelib_allocator
     CCacheManager.cpp
     ContainerTypes.cpp
     FreeMemStrategy.cpp
+    FreeThresholdStrategy.cpp
     HitsPerSlabStrategy.cpp
     LruTailAgeStrategy.cpp
     MarginalHitsOptimizeStrategy.cpp
@@ -117,6 +118,8 @@ if (BUILD_TESTS)
   add_test (tests/ChainedHashTest.cpp)
   add_test (tests/AllocatorResizeTypeTest.cpp)
   add_test (tests/AllocatorHitStatsTypeTest.cpp)
+  add_test (tests/AllocatorMemoryTiersTest.cpp)
+  add_test (tests/MemoryTiersTest.cpp)
   add_test (tests/MultiAllocatorTest.cpp)
   add_test (tests/NvmAdmissionPolicyTest.cpp)
   add_test (tests/CacheAllocatorConfigTest.cpp)

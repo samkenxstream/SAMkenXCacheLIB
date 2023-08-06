@@ -130,10 +130,19 @@ struct ObjectCacheConfig {
       SerializeCb serializeCallback,
       DeserializeCb deserializeCallback);
 
+  // Enable tracking Jemalloc external fragmentation.
+  ObjectCacheConfig& enableFragmentationTracking();
+
   ObjectCacheConfig& setItemReaperInterval(std::chrono::milliseconds interval);
 
   ObjectCacheConfig& setEvictionPolicyConfig(
       EvictionPolicyConfig _evictionPolicyConfig);
+
+  ObjectCacheConfig& setEvictionSearchLimit(uint32_t _evictionSearchLimit);
+
+  // We will delay worker start until user explicitly calls
+  // ObjectCache::startCacheWorkers()
+  ObjectCacheConfig& setDelayCacheWorkersStart();
 
   // With size controller disabled, above this many entries, L1 will start
   // evicting.
@@ -161,6 +170,14 @@ struct ObjectCacheConfig {
 
   // If this is enabled, user has to pass the object size upon insertion
   bool objectSizeTrackingEnabled{false};
+
+  // If this is enabled, we will track Jemalloc external fragmentation and add
+  // the fragmentation bytes on top of total object size to bound the cache
+  bool fragmentationTrackingEnabled{false};
+
+  // If this is enabled, we will track the object size distribution and export
+  // the stats to ods.
+  bool objectSizeDistributionTrackingEnabled{false};
 
   // Period to fire size controller in milliseconds. 0 means size controller is
   // disabled.
@@ -206,6 +223,14 @@ struct ObjectCacheConfig {
 
   // Config of the eviction policy
   EvictionPolicyConfig evictionPolicyConfig{};
+
+  // The maximum number of tries to search for an object to evict
+  // 0 means it's infinite
+  uint32_t evictionSearchLimit{50};
+
+  // If true, we will delay worker start until user explicitly calls
+  // ObjectCache::startCacheWorkers()
+  bool delayCacheWorkersStart{false};
 
   const ObjectCacheConfig& validate() const;
 };
@@ -269,6 +294,12 @@ template <typename T>
 ObjectCacheConfig<T>& ObjectCacheConfig<T>::setSizeControllerThrottlerConfig(
     util::Throttler::Config config) {
   sizeControllerThrottlerConfig = config;
+  return *this;
+}
+
+template <typename T>
+ObjectCacheConfig<T>& ObjectCacheConfig<T>::enableFragmentationTracking() {
+  fragmentationTrackingEnabled = true;
   return *this;
 }
 
@@ -359,6 +390,19 @@ ObjectCacheConfig<T>& ObjectCacheConfig<T>::setEvictionPolicyConfig(
 }
 
 template <typename T>
+ObjectCacheConfig<T>& ObjectCacheConfig<T>::setEvictionSearchLimit(
+    uint32_t _evictionSearchLimit) {
+  evictionSearchLimit = _evictionSearchLimit;
+  return *this;
+}
+
+template <typename T>
+ObjectCacheConfig<T>& ObjectCacheConfig<T>::setDelayCacheWorkersStart() {
+  delayCacheWorkersStart = true;
+  return *this;
+}
+
+template <typename T>
 const ObjectCacheConfig<T>& ObjectCacheConfig<T>::validate() const {
   // checking missing params
   if (cacheName.empty()) {
@@ -380,6 +424,18 @@ const ObjectCacheConfig<T>& ObjectCacheConfig<T>::validate() const {
       throw std::invalid_argument(
           "Only one of sizeControllerIntervalMs and cacheSizeLimit is set");
     }
+  }
+
+  if (fragmentationTrackingEnabled && !objectSizeTrackingEnabled) {
+    throw std::invalid_argument(
+        "Object size tracking has to be enabled to have fragmentation "
+        "tracking");
+  }
+
+  if (objectSizeDistributionTrackingEnabled && !objectSizeTrackingEnabled) {
+    throw std::invalid_argument(
+        "Object size tracking has to be enabled to track object size "
+        "distribution");
   }
   return *this;
 }
